@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: "", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
     boxVisible: false, boxShapes: [], structureAtoms: [] };
   const editorModeLoads = new Map();
   const editorModes = {
@@ -62,11 +62,12 @@
     return true;
   }
 
-  function initializeWorkspace() {
+  async function initializeWorkspace() {
     initializeCodeEditor();
-    fetchState();
-    fetchProjects();
-    fetchModelConfig();
+    await fetchProjects();
+    await fetchRuns();
+    await fetchState();
+    await fetchModelConfig();
     renderChat();
   }
 
@@ -175,17 +176,28 @@
   }
 
   async function fetchState() {
+    const projectId = app.projectId, runKey = app.runKey;
     try {
       const response = await fetch(scoped("/api/state"), { cache: "no-store" });
       if (!response.ok) throw new Error((await response.json()).error || response.statusText);
-      app.state = await response.json();
-      if (!app.runKey && app.state.run_key) app.runKey = app.state.run_key;
+      const state = await response.json();
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
+      app.state = state;
+      app.runKey = state.run_key || "";
+      if (!app.runKey) {
+        app.eventSource?.close(); app.eventSource = null; app.events = [];
+        app.selectedStage = null; app.selectedPocket = null; app.structureArtifact = null;
+        app.provenance = null; disposeViewers();
+        $("result-provenance")?.setAttribute("hidden", "");
+        $("workflow-node-detail").textContent = "本项目暂无运行";
+      }
       if (!app.projectId && app.state.project?.project_id) app.projectId = app.state.project.project_id;
       setConnection(true);
       renderAll();
       connectEvents();
       fetchRuns();
     } catch (error) {
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
       setConnection(false);
       toast(error.message || "Unable to load run data", true);
     }
@@ -211,7 +223,12 @@
     }
     $("workflow-pause").disabled = !state.server?.workflow_running;
     $("workflow-cancel").disabled = !state.server?.workflow_running;
-    $("workflow-continue").disabled = state.server?.workflow_running || ["cancelled", "succeeded"].includes(state.status);
+    const cannotContinue = !app.runKey || state.server?.workflow_running || ["cancelled", "succeeded"].includes(state.status);
+    $("workflow-continue").disabled = cannotContinue;
+    $("continue-button").disabled = cannotContinue;
+    $("submit-review").disabled = !app.runKey;
+    $("save-pricing").disabled = !app.runKey;
+    $("rerun-stage").disabled = !app.runKey || !app.selectedStage || state.server?.workflow_running;
     const runPill = $("run-state-pill");
     runPill.textContent = ({ succeeded: "已完成", failed: "失败", running: "运行中", paused: "已暂停", cancelled: "已取消", waiting_approval: "等待审核", waiting_input: "等待输入", waiting_execution: "等待执行" })[state.status] || (state.run_id ? state.status || "待运行" : "无运行");
     runPill.className = `run-state-pill ${state.status || "idle"}`;
@@ -267,12 +284,15 @@
   }
 
   function connectEvents() {
-    if (app.eventSource) return;
-    app.eventSource = new EventSource(scoped("/api/events", { since: app.events.at(-1)?.event_id || 0 }));
-    app.eventSource.onopen = () => { $("event-live").classList.add("live-indicator"); };
-    app.eventSource.onmessage = (message) => receiveEvent(message.data);
-    ["run_started", "run_completed", "run_failed", "run_paused", "run_cancelled", "control_requested", "model_started", "model_finished", "tool_started", "tool_finished", "stage_started", "stage_completed", "stage_failed", "stage_progress", "waiting_approval", "artifact_published", "human_decision", "run_created", "run_branched", "pricing_updated"].forEach((type) => app.eventSource.addEventListener(type, (event) => receiveEvent(event.data)));
-    app.eventSource.onerror = () => {
+    if (app.eventSource || !app.runKey) return;
+    const source = new EventSource(scoped("/api/events", { since: app.events.at(-1)?.event_id || 0 }));
+    app.eventSource = source;
+    source.onopen = () => { if (app.eventSource === source) $("event-live").classList.add("live-indicator"); };
+    const onEvent = (event) => { if (app.eventSource === source) receiveEvent(event.data); };
+    source.onmessage = onEvent;
+    ["run_started", "run_completed", "run_failed", "run_paused", "run_cancelled", "control_requested", "model_started", "model_finished", "tool_started", "tool_finished", "stage_started", "stage_completed", "stage_failed", "stage_progress", "waiting_approval", "artifact_published", "human_decision", "run_created", "run_branched", "pricing_updated"].forEach((type) => source.addEventListener(type, onEvent));
+    source.onerror = () => {
+      if (app.eventSource !== source) return;
       $("event-live").classList.remove("live-indicator");
       app.eventSource.close(); app.eventSource = null;
       fetch("/api/auth", { cache: "no-store" }).then((response) => response.json()).then((auth) => {
@@ -433,7 +453,7 @@
     const status = stageStatus(stage); const result = app.state.stage_results?.[stage] || {};
     $("workflow-node-title").textContent = label; $("workflow-node-status").textContent = stageStatusLabel(status);
     $("workflow-node-detail").innerHTML = `<div class="inspector-fact"><span>状态</span><strong>${esc(stageStatusLabel(status))}</strong></div><div class="inspector-fact"><span>产物</span><strong>${(app.state.artifacts?.[stage] || []).length}</strong></div><div class="inspector-fact"><span>进度</span><strong>${esc(stageProgress(stage, status) || "—")}</strong></div><div class="inspector-fact"><span>最近结果</span><strong>${esc(result.error || result.metadata?.profile || result.metadata?.selected_rank || "已记录在运行清单")}</strong></div>`;
-    $("rerun-stage").disabled = app.state.server?.workflow_running;
+    $("rerun-stage").disabled = !app.runKey || app.state.server?.workflow_running;
   }
 
   function inspectGraphNode(node) {
@@ -481,9 +501,11 @@
   }
 
   async function fetchRuns() {
+    const projectId = app.projectId, runKey = app.runKey;
     try {
       const response = await fetch(scoped("/api/runs"), { cache: "no-store" }); const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
       const runs = data.runs || [];
       $("run-selector").innerHTML = runs.length ? runs.map((run) => {
         const title = `${run.run_key} · ${run.target_id || run.run_id} · ${run.status || "unknown"}`;

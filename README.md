@@ -94,6 +94,12 @@ or two people, can work on different runs at the same time without changing
 each other's view. `GET /api/runs?project_id=...` lists only that project's
 runs.
 
+Projects without runs return an empty state. Their files, terminal and chats
+remain available; run actions are rejected until a run exists. A request naming
+both a project and a run must use a run owned by that project. Requests omitting
+project scope retain the legacy startup default; `project_id=.` is the
+workspace-wide view.
+
 The server answers only requests whose `Host` header matches the address it
 was bound to. Behind a reverse proxy, pass the public name explicitly:
 
@@ -119,9 +125,17 @@ directories, retaining the original inputs and outputs.
 ## Development
 
 ```bash
+python -m unittest discover -s tests -v
 python -m compileall -q src/drugstudio
 node --check src/drugstudio/web/static/app.js
 ```
+
+The HTTP regressions use temporary workspaces and do not call models or launch
+scientific jobs. CI builds and installs a wheel, checks bundled assets, and runs
+the suite on Python 3.11 and 3.12. Tests requiring optional PDBFixer are explicitly
+skipped when it is unavailable; run the suite in the receptor environment to
+exercise those checks as well. `./run-agent.sh` also works directly from a source
+checkout without installing the package.
 
 The focused preparation regression checks are in `tests/`. Tests requiring
 PDBFixer/OpenMM or external chemistry executables need those optional tools

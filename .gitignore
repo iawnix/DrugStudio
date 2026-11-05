@@ -16,6 +16,9 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+build/
+dist/
+*.egg-info/
 
 # Scientific runs, outputs and local application state
 runs/

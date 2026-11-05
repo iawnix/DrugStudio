@@ -6,12 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from dock_agent.contracts import LigandSpec, TargetSpec
-from dock_agent.storage import ArtifactStore
-from dock_agent.ports import ToolContext, ToolResult
-from dock_agent.integrations.pdbfixer_bridge import _filtered_pdb, _label
-from dock_agent.integrations.receptor_pipeline import PDBFixerReceptorPreparer, ReceptorPreparationPolicy
-from dock_agent.integrations.ligand_pipeline import LigandPreparationPipeline
+from drugstudio.contracts import LigandSpec, TargetSpec
+from drugstudio.storage import ArtifactStore
+from drugstudio.ports import ToolContext, ToolResult
+from drugstudio.integrations.pdbfixer_bridge import _filtered_pdb, _label
+from drugstudio.integrations.receptor_pipeline import PDBFixerReceptorPreparer, ReceptorPreparationPolicy
+from drugstudio.integrations.ligand_pipeline import LigandPreparationPipeline
 
 
 def atom(serial, name, residue, number):
@@ -75,7 +75,7 @@ class PreparationRegressions(unittest.TestCase):
                 (wd/'receptor_repair.json').write_text('{}\n')
                 kwargs['log_path'].write_text('done\n')
             preparer=PDBFixerReceptorPreparer(store)
-            with patch('dock_agent.integrations.receptor_pipeline._run',side_effect=worker) as run:
+            with patch('drugstudio.integrations.receptor_pipeline._run',side_effect=worker) as run:
                 self.assertEqual(preparer.prepare(source,target,context).status,'succeeded')
                 self.assertEqual(preparer.prepare(source,target,context).status,'succeeded')
                 self.assertEqual(run.call_count,1)

@@ -26,7 +26,7 @@ PIP_CACHE_DIR="$PWD/../../.runtime/receptor-install/pip-cache" \
 ```
 
 The interpreter is `.venv/bin/python` below this directory. The workflow uses
-`dock_agent/scripts/run_receptor_env.sh` automatically for PDBFixer. It retains
+`scripts/run_receptor_env.sh` automatically for PDBFixer. It retains
 the caller's working directory, clears inherited Python package paths, and
 limits OpenMM CPU threads to one by default. The existing chemistry command
 builder supplies run-local temporary and cache directories. Meeko and ligand

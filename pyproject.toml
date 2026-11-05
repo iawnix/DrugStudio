@@ -9,9 +9,9 @@ description = "An agent workbench for structure-based drug discovery"
 requires-python = ">=3.11"
 
 [project.scripts]
-drugstudio = "dock_agent.cli:main"
+drugstudio = "drugstudio.cli:main"
 # Backward-compatible entry point for existing Dock Agent installations.
-dock-agent = "dock_agent.cli:main"
+dock-agent = "drugstudio.cli:main"
 
 [project.optional-dependencies]
 orchestration = ["langchain-core>=0.3,<2", "langgraph>=0.2,<2"]
@@ -19,4 +19,8 @@ openai = ["langchain-core>=0.3,<2", "langgraph>=0.2,<2", "langchain-openai>=0.2,
 chemistry = ["rdkit"]
 
 [tool.setuptools.packages.find]
-include = ["dock_agent*"]
+where = ["src"]
+include = ["drugstudio*"]
+
+[tool.setuptools.package-data]
+"drugstudio.web" = ["static/*"]

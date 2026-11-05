@@ -76,7 +76,7 @@ drugstudio status --run-root /path/to/project/work/drugstudio/run-001
 To start the persistent web workbench:
 
 ```bash
-python -m dock_agent.web.server \
+python -m drugstudio.web.server \
   --runs-root /path/to/project/work/drugstudio/runs \
   --workspace-root /path/to/projects \
   --host 127.0.0.1 --port 8765
@@ -88,10 +88,29 @@ relationship sidecars in `.workbench/` and each run's `run-meta.json`; the
 scientific manifest remains the source of truth. `GET /api/provenance` returns
 the upstream artifact chain for a selected result.
 
+The server keeps no current project or current run of its own. Every request
+names its own scope through `project_id` and `run_key`, so two browser tabs,
+or two people, can work on different runs at the same time without changing
+each other's view. `GET /api/runs?project_id=...` lists only that project's
+runs.
+
+The server answers only requests whose `Host` header matches the address it
+was bound to. Behind a reverse proxy, pass the public name explicitly:
+
+```bash
+python -m drugstudio.web.server --runs-root ... --host 0.0.0.0 --port 8765 \
+  --allowed-host workbench.lab.example
+```
+
+Run artifacts are served as downloads with `X-Content-Type-Options: nosniff`,
+so an HTML or SVG file produced by an external tool cannot execute on the
+workbench origin. The browsers' 3D viewers and the editor read them with
+`fetch()` and are unaffected.
+
 ## Architecture
 
 Scientific modules communicate through the typed contracts in
-`dock_agent/contracts.py` and ports in `dock_agent/ports.py`. The supervisor
+`src/drugstudio/contracts.py` and ports in `src/drugstudio/ports.py`. The supervisor
 uses the LLM to choose registered tools and interpret their structured
 observations. Tool adapters own the chemistry and external program calls.
 Run artifacts are immutable and content-hashed; reruns branch to new run
@@ -100,8 +119,8 @@ directories, retaining the original inputs and outputs.
 ## Development
 
 ```bash
-python -m compileall -q dock_agent
-node --check dock_agent/web/static/app.js
+python -m compileall -q src/drugstudio
+node --check src/drugstudio/web/static/app.js
 ```
 
 The focused preparation regression checks are in `tests/`. Tests requiring

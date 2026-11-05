@@ -90,23 +90,26 @@ the upstream artifact chain for a selected result.
 
 ### Run parameters
 
-The tunable scientific parameters are declared once in
-`src/drugstudio/parameters.py`, which the CLI, the `/api/parameters`
-endpoints and the browser form all read. Values are stored per run in
-`inputs/runtime.json`, the same artifact recorded as
-`runtime_configuration`.
+The editable scientific parameters and validation rules live in
+`src/drugstudio/parameters.py`. The CLI and `/api/parameters` use those rules,
+and the browser builds its forms from the API schema.
 
-That file is the run's reproducibility record, so it wins over the argparse
-defaults: `drugstudio run` reads it and uses a default only where the file
-has no value and the flag was not given on the command line. An explicitly
-named flag always takes precedence. The workbench passes a run's saved
-values to the subprocess it starts, so resuming a run continues on the
-parameters it was configured with rather than on whatever the defaults are
-today.
+Saving an edit writes the run's `parameter-settings.json` sidecar, without
+changing historical artifacts. Execution records an immutable
+`inputs/runtime-<hash>.json` snapshot in the manifest. Legacy
+`inputs/runtime.json` snapshots remain readable and retain their checksums.
+A resumed run loads its latest snapshot and saved edits; explicitly supplied
+CLI flags take precedence. Partial API updates retain the other saved values.
 
-Box centre and size are deliberately not parameters. They are a human
-review decision, recorded through `overrides` by the review command and the
-review panel.
+Changes affecting computed stages require a rerun branch from the earliest
+affected stage. For example, seed changes require rerunning **ligand preparation**
+and downstream stages, since the seed affects conformer generation as well as
+docking. The UI displays the required stage and startup rejects incompatible
+reuse of old outputs. Parameter saves are blocked during active web or CLI
+execution, and audit events record both old and new values.
+
+Box centre and size remain human review decisions through `overrides`. Existing
+manual CLI boxes are preserved when continuing without new box flags.
 
 The server keeps no current project or current run of its own. Every request
 names its own scope through `project_id` and `run_key`, so two browser tabs,

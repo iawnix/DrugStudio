@@ -43,12 +43,12 @@ jobs:
       - run: python -m pip install . playwright
       - run: python -m playwright install --with-deps chromium
       - run: npm install --prefix .runtime/viewer --no-save 3dmol@2.5.5
-      - name: Review UI with real 3Dmol and without a renderer
+      - name: Review and parameter UI with real browser
         env:
           DRUGSTUDIO_REQUIRE_UI_TESTS: '1'
           DRUGSTUDIO_TEST_3DMOL: .runtime/viewer/node_modules/3dmol/build/3Dmol-min.js
           DRUGSTUDIO_UI_SCREENSHOT: output/playwright/docking-box.png
-        run: python -m unittest discover -s tests -p test_review_ui.py -v
+        run: python -m unittest discover -s tests -p "test_*ui.py" -v
       - uses: actions/upload-artifact@v4
         if: always()
         with:

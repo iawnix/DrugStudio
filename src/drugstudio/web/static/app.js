@@ -3,7 +3,7 @@
   "use strict";
 
   const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: "", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
-    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null, parameters: null, parameterEdits: {}, parameterRequestId: 0 };
+    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null, parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -393,16 +393,31 @@
   // no parameters. The form is built from the schema the server serves, so
   // adding a knob in parameters.py is enough to make it editable here.
 
+  function resetParameterContext() {
+    app.parameterRequestId += 1;
+    app.parameters = null; app.parameterEdits = {}; app.parameterSaving = false;
+    renderStageParameters();
+  }
+
   async function fetchParameters() {
+    if (!app.runKey) { resetParameterContext(); return; }
+    if (app.parameterSaving) return;
+    const projectId = app.projectId, runKey = app.runKey;
+    const requestId = ++app.parameterRequestId;
+    const current = () => requestId === app.parameterRequestId && projectId === app.projectId && runKey === app.runKey;
     try {
       const response = await fetch(scoped("/api/parameters"), { cache: "no-store" });
       const data = await response.json();
+      if (!current()) return;
       if (!response.ok) throw new Error(data.error || response.statusText);
+      if (data.run_key !== runKey) throw new Error("参数所属运行不匹配，请刷新后重试");
+      if (app.parameters?.run_key !== runKey) app.parameterEdits = {};
       app.parameters = data;
-      app.parameterEdits = {};
       renderStageParameters();
     } catch (error) {
+      if (!current()) return;
       app.parameters = null;
+      renderStageParameters();
       const fields = $("stage-parameters-fields");
       if (fields) fields.innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
     }
@@ -416,8 +431,8 @@
   function parameterField(item) {
     const value = parameterValue(item.key);
     const id = `param-${item.key}`;
-    const disabled = app.parameters?.editable ? "" : "disabled";
-    const changed = app.parameters?.values?.[item.key] !== item.default;
+    const disabled = app.parameters?.editable && !app.parameterSaving ? "" : "disabled";
+    const changed = JSON.stringify(app.parameters?.values?.[item.key]) !== JSON.stringify(item.default);
     let control;
     if (item.kind === "bool") {
       control = `<input type="checkbox" id="${id}" data-parameter="${esc(item.key)}" ${value ? "checked" : ""} ${disabled}>`;
@@ -425,7 +440,7 @@
       control = `<select id="${id}" class="input-control" data-parameter="${esc(item.key)}" ${disabled}>${
         item.choices.map((choice) => `<option value="${esc(choice)}" ${choice === value ? "selected" : ""}>${esc(choice)}</option>`).join("")}</select>`;
     } else if (item.kind === "list") {
-      control = `<textarea id="${id}" class="input-control" rows="2" data-parameter="${esc(item.key)}" placeholder="每行一个" ${disabled}>${esc((value || []).join("\n"))}</textarea>`;
+      control = `<textarea id="${id}" class="input-control" rows="2" data-parameter="${esc(item.key)}" placeholder="每行一个" ${disabled}>${esc(Array.isArray(value) ? value.join("\n") : (value || ""))}</textarea>`;
     } else if (item.kind === "text") {
       control = `<input type="text" id="${id}" class="input-control" data-parameter="${esc(item.key)}" value="${esc(value ?? "")}" ${disabled}>`;
     } else {
@@ -446,7 +461,13 @@
     const fields = $("stage-parameters-fields");
     const stage = app.selectedStage;
     const data = app.parameters;
-    if (!data) { fields.innerHTML = `<div class="empty-state">参数尚未载入。</div>`; return; }
+    if (!data || data.run_key !== app.runKey) {
+      fields.innerHTML = `<div class="empty-state">${app.runKey ? "参数尚未载入。" : "本项目暂无运行。"}</div>`;
+      $("stage-parameters-actions").hidden = true;
+      $("stage-parameters-note").hidden = true;
+      $("stage-parameters-state").textContent = "";
+      return;
+    }
     const items = data.parameters.filter((item) => item.stage === stage);
     $("stage-parameters-state").textContent = data.editable ? "" : "运行中不可修改";
     if (!items.length) {
@@ -470,6 +491,8 @@
       });
     });
     $("stage-parameters-actions").hidden = !data.editable;
+    $("save-parameters").disabled = app.parameterSaving;
+    $("reset-parameters").disabled = app.parameterSaving;
     renderParameterNote();
     if (window.lucide) window.lucide.createIcons();
   }
@@ -488,7 +511,13 @@
   function renderParameterNote() {
     const note = $("stage-parameters-note");
     const pending = pendingParameterKeys();
-    if (!pending.length) { note.hidden = true; return; }
+    if (!pending.length) {
+      const required = app.parameters?.rerun_required;
+      const label = workflowNodes.find(([name]) => name === required)?.[1] || required;
+      note.hidden = !required;
+      note.textContent = required ? `已保存的参数需要从「${label}」重跑后生效。` : "";
+      return;
+    }
     // Say what a change costs before it is saved: the stage it invalidates
     // is the one the user will have to rerun from.
     const stages = pending.map((key) => app.parameters.parameters.find((item) => item.key === key)?.stage);
@@ -500,20 +529,30 @@
   }
 
   async function saveParameters() {
+    if (!app.runKey || app.parameters?.run_key !== app.runKey || !app.parameters?.editable || app.parameterSaving) return;
     const pending = pendingParameterKeys();
     if (!pending.length) { toast("参数没有改动"); return; }
-    const values = { ...app.parameters.values };
+    const projectId = app.projectId, runKey = app.runKey;
+    const requestId = ++app.parameterRequestId;
+    const current = () => requestId === app.parameterRequestId && projectId === app.projectId && runKey === app.runKey;
+    const values = {};
     pending.forEach((key) => { values[key] = app.parameterEdits[key]; });
+    app.parameterSaving = true;
+    renderStageParameters();
     try {
-      const response = await postJson("/api/parameters", { values });
+      const response = await postJson("/api/parameters", { values, run_key: runKey, project_id: projectId });
       const data = await response.json();
+      if (!current()) return;
       if (!response.ok) throw new Error(data.error || response.statusText);
+      if (data.run_key !== runKey) throw new Error("参数所属运行不匹配，请刷新后重试");
       app.parameters = data;
       app.parameterEdits = {};
-      renderStageParameters();
-      const label = workflowNodes.find(([name]) => name === data.affects_from)?.[1];
-      toast(label ? `参数已保存，从「${label}」重跑后生效` : "参数已保存");
-    } catch (error) { toast(error.message, true); }
+      const label = workflowNodes.find(([name]) => name === data.rerun_required)?.[1];
+      toast(label ? `参数已保存，从「${label}」重跑后生效` : "参数已保存，将用于下一次执行");
+    } catch (error) { if (current()) toast(error.message, true); }
+    finally {
+      if (current()) { app.parameterSaving = false; renderStageParameters(); }
+    }
   }
 
   function resetParameters() {
@@ -525,6 +564,7 @@
   }
 
   function handleStageAction(action, stage) {
+    if (app.selectedStage !== stage) app.parameterEdits = {};
     app.selectedStage = stage;
     if (action === "logs") {
       const details = $("advanced-run-details");
@@ -1301,6 +1341,7 @@
   }
 
   function resetRunBox() {
+    resetParameterContext();
     app.selectedPocket = null; app.structureArtifact = null; app.boxDraftRun = null;
     BOX_AXES.forEach(axis => { $(`center-${axis}`).value = ""; $(`size-${axis}`).value = 24; });
     app.structureAtoms = []; renderBoxCoverage();

@@ -8,6 +8,7 @@ from typing import Any
 from .agents import (AgentContext, AssessmentAgent, DockingAgent, DockingReActController,
                      LigandAgent, PocketAgent, ReceptorAgent, StructureAgent, create_openai_chat_model)
 from .contracts import RunState, RunStatus
+from . import parameters
 from .events import EventWriter
 from .integrations import (AlphaFoldDatabaseProvider, AlphaFoldServerRequestProvider, LocalAlphaFold3Provider,
                            AutoDockVinaEngine, AutoDockVinaLigandPreparer, AutoDockVinaReceptorPreparer,
@@ -24,6 +25,9 @@ from .storage import ArtifactStore
 def build_controller(store: ArtifactStore, state: RunState, *, settings: dict,
                      approve_box: bool = False, approve_receptor: bool = False, model: Any = None,
                      model_name: str | None = None) -> DockingReActController:
+    required = parameters.required_rerun(store.root, settings, state.stage_results)
+    if required:
+        raise ValueError(f"参数影响已有结果，请从 {required} 阶段创建重跑分支")
     if state.policy.preferred_engine != "vina":
         raise ValueError("the default runtime currently supports only Vina")
     if not state.ligands:
@@ -98,10 +102,6 @@ def build_controller(store: ArtifactStore, state: RunState, *, settings: dict,
                                                     box_size=settings.get("p2rank_box_size", 24.0))),
         docking_agent=DockingAgent(engine), assessment_agent=AssessmentAgent(VinaDruglikenessAssessor(store)),
     )
-    saved_settings = {key: value for key, value in settings.items() if key != "pocket_rank"}
-    configuration = store.publish_json(relative_path="inputs/runtime.json", value=saved_settings, kind="runtime_configuration")
-    if not any(item.path == configuration.path for item in state.artifacts.get("inputs", [])):
-        state.add_artifact("inputs", configuration)
     if state.status == RunStatus.WAITING_APPROVAL:
         # A boolean supplied to the CLI is never inferred from an LLM response.
         if state.stage_results.get("docking", {}).get("status") == "waiting_approval":
@@ -114,4 +114,5 @@ def build_controller(store: ArtifactStore, state: RunState, *, settings: dict,
             state.status = RunStatus.RUNNING
         else:
             raise ValueError("run is waiting for structure/preparation input; inspect status and create a new run with the required inputs")
+    parameters.record_runtime(store, state, settings)
     return controller

@@ -920,6 +920,16 @@ class WebApplication:
             if normalized in invalidated:
                 state["stage_results"][key] = {"status": "stale", "previous_status": state["stage_results"][key].get("status"),
                                                 "rerun_from": stage}
+        # Approval of an old receptor/pocket does not approve newly generated
+        # chemistry or a newly ranked candidate. Keep the historical decision
+        # trail, but invalidate the approvals used for execution.
+        for approval in state.get("approvals", []):
+            if approval.get("stage") in invalidated or (
+                    approval.get("stage") == "docking_box" and "pocket" in invalidated):
+                approval["approved"] = False
+                approval["invalidated_by_rerun"] = branch.name
+        if "pocket" in invalidated:
+            state.get("overrides", {}).pop("docking_box", None)
         state["tasks"] = [] if selected <= order.index("docking") else state.get("tasks", [])
         state["status"] = "created"
         state["current_node"] = None
@@ -982,28 +992,37 @@ class WebApplication:
             "values": values,
             "changed": sorted(changed),
             "affects_from": parameters.earliest_stage(changed),
+            "rerun_required": parameters.required_rerun(run_root, values, self.manifest(run_root).get("stage_results", {})),
         }
 
     def save_run_parameters(self, payload: dict, run_root: Path) -> dict:
-        if self.workflow_running(run_root):
-            raise RuntimeError("停止或暂停当前运行后才能修改参数")
         incoming = payload.get("values")
         if not isinstance(incoming, dict):
             raise ValueError("values must be an object")
-        previous = parameters.load(run_root)
-        values = parameters.validate(incoming)
-        path = run_root / parameters.RUNTIME_RELATIVE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, values)
-        difference = sorted(key for key, value in values.items() if previous.get(key) != value)
-        if difference:
-            # The parameter change is part of the run's audit trail, not just
-            # a file edit, so it goes on the event timeline too.
-            self.events_for(run_root).emit(
-                "parameters_updated", status="updated", changed=difference,
-                affects_from=parameters.earliest_stage(difference))
+        run_root = run_root.resolve()
+        # Serialize with web starts and with CLI runs / stage branching. A
+        # local process registry alone does not cover externally started runs.
+        with self._process_lock, (run_root / ".run.lock").open("a") as lock:
+            process = self._processes.get(run_root)
+            if process is not None and process.poll() is None:
+                raise RuntimeError("停止或暂停当前运行后才能修改参数")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeError("another process is using this run") from exc
+            previous = parameters.load(run_root)
+            values = parameters.validate({**previous, **incoming})
+            difference = sorted(key for key, value in values.items() if previous.get(key) != value)
+            if difference:
+                atomic_json_write(run_root / parameters.SETTINGS_RELATIVE, values)
+                self.events_for(run_root).emit(
+                    "parameters_updated", status="updated", changed=difference,
+                    previous={key: previous[key] for key in difference},
+                    values={key: values[key] for key in difference},
+                    affects_from=parameters.earliest_stage(difference))
         result = self.run_parameters(run_root)
         result["updated"] = difference
+        result["affects_from"] = parameters.earliest_stage(difference)
         return result
 
     def _usage_from_traces(self, run_root: Path) -> dict[str, dict]:
@@ -1079,7 +1098,11 @@ class WebApplication:
             process = self._processes.get(run_root)
             if process is not None and process.poll() is None:
                 return {"status": "already_running"}
-            current_status = self.manifest(run_root).get("status")
+            manifest = self.manifest(run_root)
+            required = parameters.required_rerun(run_root, parameters.load(run_root), manifest.get("stage_results", {}))
+            if required:
+                raise RuntimeError(f"参数影响已有结果，请从 {required} 阶段创建重跑分支")
+            current_status = manifest.get("status")
             if current_status == "cancelled":
                 raise RuntimeError("this run was cancelled; create a stage rerun branch to continue")
             if current_status == "succeeded":

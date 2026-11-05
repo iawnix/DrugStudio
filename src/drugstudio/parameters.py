@@ -4,10 +4,9 @@ The CLI, the web API and the browser form all read this, so a parameter is
 declared once rather than being spelled out as an argparse flag, a
 validation branch and a form field that drift apart.
 
-Values are persisted to ``inputs/runtime.json`` inside the run, which is the
-same artifact ``build_controller`` records as ``runtime_configuration``. That
-file is the run's reproducibility record: a resumed run must use what it was
-started with, not whatever the defaults happen to be today.
+Editable values live in a run-local parameter-settings.json sidecar. Executed
+configurations are immutable, content-addressed runtime_configuration artifacts.
+Legacy inputs/runtime.json snapshots remain readable and are never overwritten.
 
 Box centre and size are deliberately absent. They are a human review
 decision recorded through ``overrides``, not a dial.
@@ -16,11 +15,14 @@ decision recorded through ``overrides``, not a dial.
 from __future__ import annotations
 
 import json
+import math
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-RUNTIME_RELATIVE = "inputs/runtime.json"
+RUNTIME_RELATIVE = "inputs/runtime.json"  # legacy immutable snapshot
+SETTINGS_RELATIVE = "parameter-settings.json"
 
 
 @dataclass(frozen=True)
@@ -73,8 +75,8 @@ PARAMETERS: tuple[Parameter, ...] = (
               help="同时运行的对接任务数", minimum=1, maximum=256),
     Parameter("allocated_cpus", "docking", "每任务 CPU 数", "int", 1,
               help="分配给单个对接任务的 CPU 核数", minimum=1, maximum=256),
-    Parameter("seed", "docking", "随机种子", "int", 20261016,
-              help="对接与构象生成的随机种子；复现结果时保持不变", minimum=1),
+    Parameter("seed", "ligand", "随机种子", "int", 20261016,
+              help="对接与构象生成的随机种子；复现结果时保持不变", minimum=1, maximum=2147483647),
 )
 
 BY_KEY = {parameter.key: parameter for parameter in PARAMETERS}
@@ -93,13 +95,23 @@ def _coerce(parameter: Parameter, value: Any) -> Any:
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-    if parameter.kind == "int":
-        number = int(value)
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+        raise ValueError("需要布尔值")
+    if parameter.kind in {"int", "float"}:
+        if isinstance(value, bool):
+            raise ValueError("需要数值")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("需要有限数值")
+        if parameter.kind == "int":
+            if not number.is_integer():
+                raise ValueError("需要整数")
+            return int(number)
         return number
-    if parameter.kind == "float":
-        return float(value)
     if parameter.kind == "choice":
         text = str(value)
         if text not in parameter.choices:
@@ -110,8 +122,10 @@ def _coerce(parameter: Parameter, value: Any) -> Any:
             return []
         if isinstance(value, str):
             items = [line.strip() for line in value.replace(",", "\n").splitlines()]
-        else:
+        elif isinstance(value, list):
             items = [str(item).strip() for item in value]
+        else:
+            raise ValueError("需要列表或逐行文本")
         cleaned = [item for item in items if item]
         if len(cleaned) > 64:
             raise ValueError(f"{parameter.label}：最多 64 项")
@@ -137,7 +151,7 @@ def validate(values: dict) -> dict:
             continue
         try:
             coerced = _coerce(parameter, value)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, OverflowError) as error:
             raise ValueError(f"{parameter.label}：{error}" if "：" not in str(error) else str(error)) from error
         if parameter.minimum is not None and coerced is not None and coerced < parameter.minimum:
             raise ValueError(f"{parameter.label}：不能小于 {parameter.minimum}")
@@ -147,22 +161,73 @@ def validate(values: dict) -> dict:
     return merged
 
 
-def load(run_root: Path) -> dict:
-    """Saved values for a run, filled in with defaults for anything absent."""
+def runtime_settings(run_root: Path) -> dict:
+    """Read the latest executed configuration, including manual CLI box values."""
+    path = run_root / RUNTIME_RELATIVE
     try:
-        saved = json.loads((run_root / RUNTIME_RELATIVE).read_text(encoding="utf-8"))
+        manifest = json.loads((run_root / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return defaults()
-    if not isinstance(saved, dict):
-        return defaults()
+        manifest = {}
+    snapshots = [item for item in manifest.get("artifacts", {}).get("inputs", [])
+                 if item.get("kind") == "runtime_configuration"]
+    if snapshots:
+        path = (run_root / snapshots[-1]["path"]).resolve()
+        path.relative_to(run_root.resolve())
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def load(run_root: Path) -> dict:
+    """Overlay editable settings on the executed snapshot; validate each value."""
+    saved = runtime_settings(run_root)
+    try:
+        edits = json.loads((run_root / SETTINGS_RELATIVE).read_text(encoding="utf-8"))
+        if isinstance(edits, dict):
+            saved.update(edits)
+    except (OSError, json.JSONDecodeError):
+        pass
     merged = defaults()
     for key, value in saved.items():
         if key in BY_KEY:
             try:
-                merged[key] = _coerce(BY_KEY[key], value)
-            except (TypeError, ValueError):
+                merged[key] = validate({key: value})[key]
+            except (TypeError, ValueError, OverflowError):
                 continue
     return merged
+
+
+def required_rerun(run_root: Path, values: dict, stage_results: dict) -> Optional[str]:
+    """Do not apply new parameters to already-computed downstream artifacts."""
+    previous = {**defaults(), **runtime_settings(run_root)}
+    changed = [key for key in BY_KEY if key in values and values[key] != previous.get(key)]
+    earliest = earliest_stage(changed)
+    if earliest is None:
+        return None
+    affected = set(STAGE_ORDER[STAGE_ORDER.index(earliest):])
+    if any(key.split(":", 1)[0] in affected and
+           result.get("status") not in {None, "pending", "stale"}
+           for key, result in stage_results.items()):
+        return earliest
+    return None
+
+
+def record_runtime(store, state, settings: dict):
+    """Publish an immutable snapshot and make it the latest manifest reference."""
+    digest = hashlib.sha256(json.dumps(settings, sort_keys=True, allow_nan=False).encode()).hexdigest()
+    artifact = store.publish_json(relative_path=f"inputs/runtime-{digest}.json",
+                                  value=settings, kind="runtime_configuration")
+    inputs = state.artifacts.setdefault("inputs", [])
+    # Reverting to an older configuration must still select it as the latest.
+    inputs[:] = [item for item in inputs if item.path != artifact.path]
+    state.add_artifact("inputs", artifact)
+    store.save_manifest(state)
+    # Once applied, future resumes use this snapshot. Otherwise an old UI
+    # draft could silently undo an explicit CLI override on the next resume.
+    store.path(SETTINGS_RELATIVE).unlink(missing_ok=True)
+    return artifact
 
 
 def changed_from_default(values: dict) -> dict:
@@ -202,5 +267,6 @@ def to_cli_args(values: dict) -> list[str]:
     return args
 
 
-__all__ = ["PARAMETERS", "BY_KEY", "STAGE_ORDER", "RUNTIME_RELATIVE", "Parameter",
+__all__ = ["PARAMETERS", "BY_KEY", "STAGE_ORDER", "RUNTIME_RELATIVE", "SETTINGS_RELATIVE", "Parameter",
+           "runtime_settings", "record_runtime", "required_rerun",
            "changed_from_default", "defaults", "earliest_stage", "load", "to_cli_args", "validate"]

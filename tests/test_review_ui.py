@@ -87,7 +87,7 @@ def build_run(run: Path) -> None:
 
 
 @unittest.skipIf(sync_playwright is None, "playwright is not installed")
-class ReviewUI(unittest.TestCase):
+class BrowserHarness(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._pw = sync_playwright().start()
@@ -181,6 +181,8 @@ class ReviewUI(unittest.TestCase):
         # Ensure the following state refresh finishes before more UI actions.
         self.page.wait_for_function("document.querySelector('#decision-history').textContent.includes('web-reviewer')")
 
+
+class ReviewUI(BrowserHarness):
     def test_box_starts_hidden_and_toggles(self):
         self.open_structure()
         self.assertEqual(self.page.get_attribute("#toggle-box", "aria-pressed"), "false")

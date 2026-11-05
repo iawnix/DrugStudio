@@ -1,0 +1,45 @@
+#!/bin/bash
+#PBS -N dock_agent_af3
+#PBS -j oe
+
+set -euo pipefail
+
+: "${AF3_INPUT_JSON:?AF3_INPUT_JSON is required}"
+: "${AF3_OUTPUT_DIR:?AF3_OUTPUT_DIR is required}"
+: "${AF3_RUN_DIR:?AF3_RUN_DIR is required}"
+: "${AF3_WORK_DIR:?AF3_WORK_DIR is required}"
+: "${AF3_ACTIVATE:?Set AF3_ACTIVATE to the installed AF3 activation script}"
+: "${AF3_GPU_ID:?Set AF3_GPU_ID after coordinating the physical GPU index}"
+
+mkdir -p "$AF3_OUTPUT_DIR" "$AF3_WORK_DIR" "$AF3_RUN_DIR/cache/af3/jax"
+cd "$AF3_WORK_DIR"
+source "$AF3_ACTIVATE"
+test -f "${AF3_ROOT}/run_alphafold.py"
+test -d "$AF3_MODEL_DIR"
+test -d "$AF3_DB_DIR"
+test -f "$AF3_INPUT_JSON"
+
+export CUDA_VISIBLE_DEVICES="$AF3_GPU_ID"
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export TF_FORCE_UNIFIED_MEMORY=true
+export XLA_CLIENT_MEM_FRACTION="${XLA_CLIENT_MEM_FRACTION:-3.2}"
+export XLA_FLAGS="${XLA_FLAGS:---xla_gpu_enable_triton_gemm=false}"
+
+"$AF3_PYTHON" "$AF3_ROOT/run_alphafold.py" \
+  --json_path="$AF3_INPUT_JSON" \
+  --model_dir="$AF3_MODEL_DIR" \
+  --db_dir="$AF3_DB_DIR" \
+  --output_dir="$AF3_OUTPUT_DIR" \
+  --run_data_pipeline=false \
+  --run_inference=true \
+  --jax_backend=gpu \
+  --gpu_device=0 \
+  --flash_attention_implementation="${AF3_FLASH_ATTENTION_IMPLEMENTATION:-triton}" \
+  --num_diffusion_samples="${AF3_NUM_DIFFUSION_SAMPLES:-1}" \
+  --num_recycles="${AF3_NUM_RECYCLES:-10}" \
+  --jax_compilation_cache_dir="$AF3_RUN_DIR/cache/af3/jax"
+
+model_cif="$(find "$AF3_OUTPUT_DIR" -type f -name '*_model.cif' -print -quit)"
+test -n "$model_cif"
+"$AF3_PYTHON" -c 'import gemmi,sys; s=gemmi.read_structure(sys.argv[1]); s.write_pdb(sys.argv[2])' \
+  "$model_cif" "$AF3_OUTPUT_DIR/model.pdb"

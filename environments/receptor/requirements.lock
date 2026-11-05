@@ -1,0 +1,3 @@
+numpy==2.4.6
+OpenMM==8.6.1
+pdbfixer==1.12.0

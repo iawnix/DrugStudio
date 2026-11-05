@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+DRUGSTUDIO_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+DRUGSTUDIO_PYTHON="${DRUGSTUDIO_PYTHON:-${DOCK_AGENT_PYTHON:-python3}}"
+export PYTHONPATH="$DRUGSTUDIO_DIRECTORY${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONNOUSERSITE=1
+exec "$DRUGSTUDIO_PYTHON" -m dock_agent "$@"

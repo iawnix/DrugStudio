@@ -37,6 +37,12 @@ IGNORABLE_CONSOLE = ("favicon", "Failed to load resource", "ERR_TUNNEL_CONNECTIO
 @unittest.skipIf(CHROME is None, "no Chrome binary available")
 class StageParametersPanel(unittest.TestCase):
     PORT = 8931
+    MANIFEST = {
+        "run_id": "r1", "status": "created", "current_node": None,
+        "target": {"target_id": "T1"}, "ligands": [{"ligand_id": "lig-1"}],
+        "artifacts": {}, "stage_results": {}, "tasks": [], "decisions": [],
+        "human_decisions": [], "approvals": [], "overrides": {}, "failures": [],
+    }
 
     @classmethod
     def setUpClass(cls):
@@ -44,12 +50,7 @@ class StageParametersPanel(unittest.TestCase):
         cls.run_root = cls.root / "proj" / "runs" / "r1"
         (cls.run_root / "logs").mkdir(parents=True)
         (cls.run_root / "inputs").mkdir(parents=True)
-        (cls.run_root / "manifest.json").write_text(json.dumps({
-            "run_id": "r1", "status": "created", "current_node": None,
-            "target": {"target_id": "T1"}, "ligands": [{"ligand_id": "lig-1"}],
-            "artifacts": {}, "stage_results": {}, "tasks": [], "decisions": [],
-            "human_decisions": [], "approvals": [], "overrides": {}, "failures": [],
-        }), encoding="utf-8")
+        (cls.run_root / "manifest.json").write_text(json.dumps(cls.MANIFEST), encoding="utf-8")
         cls.app = WebApplication(cls.run_root, cls.root, cls.root, cls.root, web_token=None)
         cls.app.allowed_hosts = _allowed_hosts("127.0.0.1", cls.PORT, [])
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", cls.PORT), Handler)
@@ -76,6 +77,7 @@ class StageParametersPanel(unittest.TestCase):
         runtime = self.run_root / parameters.RUNTIME_RELATIVE
         if runtime.exists():
             runtime.unlink()
+        (self.run_root / "manifest.json").write_text(json.dumps(self.MANIFEST), encoding="utf-8")
         self.errors = []
         self.page = self.browser.new_page(viewport={"width": 1500, "height": 980})
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
@@ -186,6 +188,56 @@ class StageParametersPanel(unittest.TestCase):
         self.assertNotEqual(before, after, "a drag should pan the canvas")
         self.assertEqual(self.page.inner_text("#workflow-node-title"), "未选择节点",
                          "a drag must not count as selecting the node under the cursor")
+
+    def set_stage_status(self, stage, status):
+        """Put a stage into a state that the graph follows automatically."""
+        path = self.run_root / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest.setdefault("stage_results", {})[stage] = {"status": status}
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def refresh(self, times=1):
+        for _ in range(times):
+            self.page.evaluate("document.querySelector('#refresh-button').click()")
+            self.page.wait_for_timeout(350)
+
+    def test_the_graph_follows_the_run_until_the_user_picks_a_node(self):
+        # With nothing picked, the inspector should follow what is running.
+        self.set_stage_status("docking", "running")
+        self.refresh()
+        self.assertEqual(self.page.inner_text("#workflow-node-title"), "分子对接")
+
+    def test_a_manual_pick_survives_incoming_events(self):
+        """renderWorkflow used to call inspectWorkflowStage(activeStage) on
+        every event, so opening one stage and waiting half a second yanked
+        the inspector back to whatever was running."""
+        self.set_stage_status("docking", "running")
+        self.refresh()
+        self.page.click('[data-workflow-stage="receptor"]')
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.inner_text("#workflow-node-title"), "受体准备")
+        self.refresh(times=4)
+        self.assertEqual(self.page.inner_text("#workflow-node-title"), "受体准备",
+                         "an event must not steal a node the user picked")
+
+    def test_updates_patch_the_graph_instead_of_rebuilding_it(self):
+        """A rebuild drops focus and restarts status animations. Tag the
+        node, trigger repaints, and check the same element is still there."""
+        self.page.evaluate(
+            "document.querySelector('[data-workflow-stage=\"docking\"]').dataset.probe = 'kept'")
+        self.page.focus('[data-workflow-stage="docking"]')
+        for _ in range(3):
+            self.page.evaluate("document.querySelector('#refresh-button').click()")
+            self.page.wait_for_timeout(250)
+        self.assertEqual(
+            self.page.get_attribute('[data-workflow-stage="docking"]', "data-probe"), "kept",
+            "the node element was replaced, so the graph was rebuilt")
+        self.assertEqual(
+            self.page.evaluate("document.activeElement.dataset.workflowStage"), "docking",
+            "keyboard focus was lost across a repaint")
+
+    def test_nothing_selected_says_so_rather_than_claiming_no_parameters(self):
+        self.assertIn("选择一个阶段", self.page.inner_text("#stage-parameters-fields"))
 
     def test_reset_restores_the_defaults_for_that_stage(self):
         self.open_stage("docking")

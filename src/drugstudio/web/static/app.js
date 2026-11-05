@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null };
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: "", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "" };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -23,7 +23,23 @@
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
   const fmt = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
-  const fileUrl = (path) => `/api/file?path=${encodeURIComponent(path)}`;
+  // The server keeps no "current project" or "current run": every request
+  // carries its own scope, so two tabs can sit on different runs.
+  const scoped = (path, extra = {}) => {
+    const url = new URL(path, window.location.origin);
+    const params = { project_id: app.projectId, run_key: app.runKey, ...extra };
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== "") url.searchParams.set(key, value);
+    });
+    return url.pathname + url.search;
+  };
+  const withScope = (body = {}) => JSON.stringify({
+    project_id: app.projectId || undefined, run_key: app.runKey || undefined, ...body
+  });
+  const postJson = (path, body) => fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: withScope(body)
+  });
+  const fileUrl = (path) => scoped("/api/file", { path });
 
   async function bootWorkspace() {
     try {
@@ -45,11 +61,12 @@
     return true;
   }
 
-  function initializeWorkspace() {
+  async function initializeWorkspace() {
     initializeCodeEditor();
-    fetchState();
-    fetchProjects();
-    fetchModelConfig();
+    await fetchProjects();
+    await fetchRuns();
+    await fetchState();
+    await fetchModelConfig();
     renderChat();
   }
 
@@ -94,7 +111,7 @@
 
   async function fetchModelConfig() {
     try {
-      const response = await fetch("/api/model-config", { cache: "no-store" });
+      const response = await fetch(scoped("/api/model-config"), { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.modelConfig = data;
@@ -118,14 +135,11 @@
     const button = $("save-model-settings");
     button.disabled = true;
     try {
-      const response = await fetch("/api/model-config", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const response = await postJson("/api/model-config", {
           base_url: $("model-base-url").value.trim(),
           model: $("chat-model").value.trim(),
           api_key: $("model-api-key").value,
           clear_api_key: $("clear-model-api-key").checked
-        })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
@@ -145,16 +159,42 @@
     }
   }
 
+  // 3Dmol keeps a live WebGL context per viewer.  Dropping the reference
+  // without clearing it leaks the context, and browsers cap them at ~16, so
+  // switching run or structure often enough used to blank the canvas.
+  function disposeViewers() {
+    [["proteinViewer", "protein-viewer"], ["ligandViewer", "ligand-viewer"]].forEach(([key, id]) => {
+      try { app[key]?.clear?.(); } catch (_) { /* viewer already torn down */ }
+      app[key] = null;
+      const host = $(id);
+      if (host) host.innerHTML = "";
+    });
+    app.ligandKey = null;
+  }
+
   async function fetchState() {
+    const projectId = app.projectId, runKey = app.runKey;
     try {
-      const response = await fetch("/api/state", { cache: "no-store" });
+      const response = await fetch(scoped("/api/state"), { cache: "no-store" });
       if (!response.ok) throw new Error((await response.json()).error || response.statusText);
-      app.state = await response.json();
+      const state = await response.json();
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
+      app.state = state;
+      app.runKey = state.run_key || "";
+      if (!app.runKey) {
+        app.eventSource?.close(); app.eventSource = null; app.events = [];
+        app.selectedStage = null; app.selectedPocket = null; app.structureArtifact = null;
+        app.provenance = null; disposeViewers();
+        $("result-provenance")?.setAttribute("hidden", "");
+        $("workflow-node-detail").textContent = "本项目暂无运行";
+      }
+      if (!app.projectId && app.state.project?.project_id) app.projectId = app.state.project.project_id;
       setConnection(true);
       renderAll();
       connectEvents();
       fetchRuns();
     } catch (error) {
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
       setConnection(false);
       toast(error.message || "Unable to load run data", true);
     }
@@ -180,7 +220,12 @@
     }
     $("workflow-pause").disabled = !state.server?.workflow_running;
     $("workflow-cancel").disabled = !state.server?.workflow_running;
-    $("workflow-continue").disabled = state.server?.workflow_running || ["cancelled", "succeeded"].includes(state.status);
+    const cannotContinue = !app.runKey || state.server?.workflow_running || ["cancelled", "succeeded"].includes(state.status);
+    $("workflow-continue").disabled = cannotContinue;
+    $("continue-button").disabled = cannotContinue;
+    $("submit-review").disabled = !app.runKey;
+    $("save-pricing").disabled = !app.runKey;
+    $("rerun-stage").disabled = !app.runKey || !app.selectedStage || state.server?.workflow_running;
     const runPill = $("run-state-pill");
     runPill.textContent = ({ succeeded: "已完成", failed: "失败", running: "运行中", paused: "已暂停", cancelled: "已取消", waiting_approval: "等待审核", waiting_input: "等待输入", waiting_execution: "等待执行" })[state.status] || (state.run_id ? state.status || "待运行" : "无运行");
     runPill.className = `run-state-pill ${state.status || "idle"}`;
@@ -236,12 +281,15 @@
   }
 
   function connectEvents() {
-    if (app.eventSource) return;
-    app.eventSource = new EventSource("/api/events?since=" + (app.events.at(-1)?.event_id || 0));
-    app.eventSource.onopen = () => { $("event-live").classList.add("live-indicator"); };
-    app.eventSource.onmessage = (message) => receiveEvent(message.data);
-    ["run_started", "run_completed", "run_failed", "run_paused", "run_cancelled", "control_requested", "model_started", "model_finished", "tool_started", "tool_finished", "stage_started", "stage_completed", "stage_failed", "stage_progress", "waiting_approval", "artifact_published", "human_decision", "run_created", "run_branched", "pricing_updated"].forEach((type) => app.eventSource.addEventListener(type, (event) => receiveEvent(event.data)));
-    app.eventSource.onerror = () => {
+    if (app.eventSource || !app.runKey) return;
+    const source = new EventSource(scoped("/api/events", { since: app.events.at(-1)?.event_id || 0 }));
+    app.eventSource = source;
+    source.onopen = () => { if (app.eventSource === source) $("event-live").classList.add("live-indicator"); };
+    const onEvent = (event) => { if (app.eventSource === source) receiveEvent(event.data); };
+    source.onmessage = onEvent;
+    ["run_started", "run_completed", "run_failed", "run_paused", "run_cancelled", "control_requested", "model_started", "model_finished", "tool_started", "tool_finished", "stage_started", "stage_completed", "stage_failed", "stage_progress", "waiting_approval", "artifact_published", "human_decision", "run_created", "run_branched", "pricing_updated"].forEach((type) => source.addEventListener(type, onEvent));
+    source.onerror = () => {
+      if (app.eventSource !== source) return;
       $("event-live").classList.remove("live-indicator");
       app.eventSource.close(); app.eventSource = null;
       fetch("/api/auth", { cache: "no-store" }).then((response) => response.json()).then((auth) => {
@@ -402,7 +450,7 @@
     const status = stageStatus(stage); const result = app.state.stage_results?.[stage] || {};
     $("workflow-node-title").textContent = label; $("workflow-node-status").textContent = stageStatusLabel(status);
     $("workflow-node-detail").innerHTML = `<div class="inspector-fact"><span>状态</span><strong>${esc(stageStatusLabel(status))}</strong></div><div class="inspector-fact"><span>产物</span><strong>${(app.state.artifacts?.[stage] || []).length}</strong></div><div class="inspector-fact"><span>进度</span><strong>${esc(stageProgress(stage, status) || "—")}</strong></div><div class="inspector-fact"><span>最近结果</span><strong>${esc(result.error || result.metadata?.profile || result.metadata?.selected_rank || "已记录在运行清单")}</strong></div>`;
-    $("rerun-stage").disabled = app.state.server?.workflow_running;
+    $("rerun-stage").disabled = !app.runKey || app.state.server?.workflow_running;
   }
 
   function inspectGraphNode(node) {
@@ -450,22 +498,32 @@
   }
 
   async function fetchRuns() {
+    const projectId = app.projectId, runKey = app.runKey;
     try {
-      const response = await fetch("/api/runs", { cache: "no-store" }); const data = await response.json();
+      const response = await fetch(scoped("/api/runs"), { cache: "no-store" }); const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
-      $("run-selector").innerHTML = (data.runs || []).map((run) => {
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
+      const runs = data.runs || [];
+      $("run-selector").innerHTML = runs.length ? runs.map((run) => {
         const title = `${run.run_key} · ${run.target_id || run.run_id} · ${run.status || "unknown"}`;
-        return `<option value="${esc(run.run_key)}" ${run.selected ? "selected" : ""} title="${esc(title)}">${esc(run.run_key)}</option>`;
-      }).join("");
+        return `<option value="${esc(run.run_key)}" ${run.run_key === app.runKey ? "selected" : ""} title="${esc(title)}">${esc(run.run_key)}</option>`;
+      }).join("") : `<option value="">本项目暂无运行</option>`;
+      // The run list is scoped to the project, so a run from the project we
+      // just left is no longer selectable; fall back to this project's newest.
+      if (runs.length && !runs.some((run) => run.run_key === app.runKey)) {
+        await selectRun(runs.at(-1).run_key);
+      } else if (!runs.length) {
+        app.runKey = "";
+      }
     } catch (error) { toast(error.message, true); }
   }
 
   async function fetchProjects() {
     try {
-      const response = await fetch("/api/projects", { cache: "no-store" }); const data = await response.json();
+      const response = await fetch(scoped("/api/projects"), { cache: "no-store" }); const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       const selected = data.selected || app.state?.project || {};
-      app.projectId = selected.project_id || ".";
+      app.projectId = app.projectId || selected.project_id || ".";
       $("project-selector").innerHTML = (data.projects || []).map((project) => `<option value="${esc(project.project_id)}" ${project.project_id === app.projectId ? "selected" : ""}>${esc(project.name)}</option>`).join("");
       $("project-description").textContent = selected.name || app.projectId;
       renderChatStatus();
@@ -475,9 +533,12 @@
 
   async function selectProject(projectId) {
     try {
-      const response = await fetch("/api/select-project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project_id: projectId }) });
+      const response = await postJson("/api/select-project", { project_id: projectId });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       app.projectId = data.project_id;
+      app.runKey = "";
+      app.eventSource?.close(); app.eventSource = null; app.events = [];
+      app.provenance = null; disposeViewers();
       app.fileDirectory = ""; app.filePath = ""; app.terminalCwd = "";
       app.terminalSession = null; app.terminalCursor = 0;
       if (app.terminalPollTimer) window.clearInterval(app.terminalPollTimer); app.terminalPollTimer = null;
@@ -486,13 +547,15 @@
       $("file-editor").value = ""; $("editor-file-label").textContent = "No file selected"; $("editor-language").textContent = "";
       $("editor-empty").hidden = false; $("save-file").disabled = true;
       await fetchProjects();
-      toast(`Project: ${data.name}`);
+      await fetchRuns();
+      await fetchState();
+      toast(`已切换到项目 ${data.name}`);
     } catch (error) { toast(error.message, true); }
   }
 
   async function refreshProjectFiles() {
     try {
-      const response = await fetch(`/api/project/files?path=${encodeURIComponent(app.fileDirectory)}`, { cache: "no-store" });
+      const response = await fetch(scoped("/api/project/files", { path: app.fileDirectory }), { cache: "no-store" });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       $("file-tree-path").textContent = `/${data.path || ""}`;
       const parent = data.path ? `<button class="file-entry parent-entry" data-file-parent="1"><i data-lucide="corner-left-up"></i><span>..</span></button>` : "";
@@ -520,7 +583,7 @@
 
   async function openProjectFile(path) {
     try {
-      const response = await fetch(`/api/project/file?path=${encodeURIComponent(path)}`); const data = await response.json();
+      const response = await fetch(scoped("/api/project/file", { path })); const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.filePath = data.path;
       if (app.codeEditor) app.codeEditor.setValue(data.content); else $("file-editor").value = data.content;
@@ -536,7 +599,7 @@
     if (!app.filePath) return;
     try {
       const content = app.codeEditor ? app.codeEditor.getValue() : $("file-editor").value;
-      const response = await fetch("/api/project/file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: app.filePath, content }) });
+      const response = await postJson("/api/project/file", { path: app.filePath, content });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       toast(`Saved ${data.path}`); refreshProjectFiles();
     } catch (error) { toast(error.message, true); }
@@ -571,7 +634,7 @@
       return;
     }
     try {
-      const response = await fetch("/api/project/terminal/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd: app.terminalCwd }) });
+      const response = await postJson("/api/project/terminal/start", { cwd: app.terminalCwd });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       app.terminalSession = data.session_id; app.terminalCwd = data.cwd || ""; app.terminalCursor = 0;
       $("terminal-cwd").textContent = `/${app.projectId}${app.terminalCwd ? `/${app.terminalCwd}` : ""}`;
@@ -587,7 +650,7 @@
     try {
       app.terminalFit.fit();
       if (!app.terminalSession) return;
-      await fetch("/api/project/terminal/resize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: app.terminalSession, columns: app.terminal.cols, rows: app.terminal.rows }) });
+      await postJson("/api/project/terminal/resize", { session_id: app.terminalSession, columns: app.terminal.cols, rows: app.terminal.rows });
     } catch (_) { /* Keep the current terminal size while the pane is hidden. */ }
   }
 
@@ -600,7 +663,7 @@
       app.terminalInputBuffer = ""; app.terminalInputTimer = null;
       if (!input || !app.terminalSession) return;
       try {
-        const response = await fetch("/api/project/terminal/input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: app.terminalSession, input }) });
+        const response = await postJson("/api/project/terminal/input", { session_id: app.terminalSession, input });
         const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       } catch (error) { app.terminal?.writeln(`\r\n\x1b[31m${error.message}\x1b[0m`); }
     }, 25);
@@ -609,7 +672,7 @@
   async function pollTerminal() {
     if (!app.terminalSession) return;
     try {
-      const response = await fetch(`/api/project/terminal/output?session_id=${encodeURIComponent(app.terminalSession)}&since=${app.terminalCursor}`, { cache: "no-store" });
+      const response = await fetch(scoped("/api/project/terminal/output", { session_id: app.terminalSession, since: app.terminalCursor }), { cache: "no-store" });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       if (data.reset) { app.terminal.clear(); app.terminalCursor = 0; }
       if (data.data) app.terminal.write(data.data);
@@ -627,7 +690,7 @@
     if (app.terminalPollTimer) window.clearInterval(app.terminalPollTimer);
     app.terminalPollTimer = null;
     if (app.terminalSession) {
-      await fetch("/api/project/terminal/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: app.terminalSession }) });
+      await postJson("/api/project/terminal/stop", { session_id: app.terminalSession });
       app.terminalSession = null;
     }
     app.terminal?.reset();
@@ -663,7 +726,7 @@
   }
 
   async function createChatRequest() {
-    const response = await fetch("/api/chats", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project_id: app.projectId }) });
+    const response = await postJson("/api/chats", { project_id: app.projectId });
     const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
     return data;
   }
@@ -692,8 +755,8 @@
 
   async function persistChat() {
     if (!app.chatId) return;
-    const response = await fetch("/api/chats/save", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: app.projectId, chat_id: app.chatId, messages: app.chatHistory }) });
+    const response = await postJson("/api/chats/save",
+      { project_id: app.projectId, chat_id: app.chatId, messages: app.chatHistory });
     const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
     const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
     if (current) Object.assign(current, data); else app.chatSessions.unshift(data);
@@ -720,10 +783,8 @@
 
   async function updateChatArchive(chatId, archived) {
     try {
-      const response = await fetch("/api/chats/archive", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: app.projectId, chat_id: chatId, archived })
-      });
+      const response = await postJson("/api/chats/archive",
+        { project_id: app.projectId, chat_id: chatId, archived });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       const chat = app.chatSessions.find((item) => item.chat_id === chatId);
@@ -776,9 +837,10 @@
     $("chat-status").classList.remove("chat-status-offline");
     try { await persistChat(); } catch (error) { toast(error.message, true); }
     try {
-      const response = await fetch("/api/project/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        messages: history, model: $("chat-model").value.trim(), temperature: Number($("chat-temperature").value)
-      }) });
+      const response = await postJson("/api/project/chat", {
+        messages: history, chat_id: app.chatId,
+        model: $("chat-model").value.trim(), temperature: Number($("chat-temperature").value)
+      });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       history.push({ role: "assistant", content: data.reply, actions: data.actions || [] });
     } catch (error) { history.push({ role: "assistant", content: `Unable to respond: ${error.message}` }); }
@@ -792,17 +854,21 @@
 
   async function selectRun(runKey) {
     try {
-      const response = await fetch("/api/select-run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_key: runKey }) });
+      const response = await postJson("/api/select-run", { run_key: runKey });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null; app.proteinViewer = null; app.ligandViewer = null;
+      // Selection is client state now; the server only confirmed the key.
+      app.runKey = data.selected || runKey;
+      if (data.project_id) app.projectId = data.project_id;
+      app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null;
+      disposeViewers();
       $("result-provenance")?.setAttribute("hidden", "");
-      await fetchState(); toast(`Selected ${runKey}`);
+      await fetchState(); toast(`已选择运行 ${app.runKey}`);
     } catch (error) { toast(error.message, true); await fetchRuns(); }
   }
 
   async function sendControl(action) {
     try {
-      const response = await fetch("/api/control", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+      const response = await postJson("/api/control", { action });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       toast(action === "pause" ? "Pause requested; waiting for a safe checkpoint" : "Cancel requested; waiting for a safe checkpoint");
       await fetchState();
@@ -812,9 +878,10 @@
   async function rerunFromSelectedStage() {
     if (!app.selectedStage) return;
     try {
-      const response = await fetch("/api/rerun", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stage: app.selectedStage }) });
+      const response = await postJson("/api/rerun", { stage: app.selectedStage });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null; app.proteinViewer = null; app.ligandViewer = null;
+      app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null;
+      disposeViewers();
       await selectRun(data.run_key || data.run_id);
       await continueWorkflow();
     } catch (error) { toast(error.message, true); }
@@ -824,7 +891,7 @@
     try {
       if (!$("price-input").value.trim() || !$("price-output").value.trim()) throw new Error("Enter both input and output token rates");
       const payload = { model: app.pricing.model, input_usd_per_million: Number($("price-input").value), output_usd_per_million: Number($("price-output").value) };
-      const response = await fetch("/api/pricing", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const response = await postJson("/api/pricing", payload);
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       app.state.costs = data; renderCosts(); toast("Model rates saved for this run");
     } catch (error) { toast(error.message, true); }
@@ -1115,8 +1182,7 @@
     panel.hidden = false;
     panel.innerHTML = `<div class="provenance-heading"><div><div class="eyebrow">PROVENANCE</div><strong>正在读取来源链…</strong></div></div>`;
     try {
-      const query = artifactId ? `?artifact_id=${encodeURIComponent(artifactId)}` : "";
-      const response = await fetch(`/api/provenance${query}`, { cache: "no-store" });
+      const response = await fetch(scoped("/api/provenance", { artifact_id: artifactId || "" }), { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.provenance = data;
@@ -1145,11 +1211,11 @@
     if (action === "select" || action === "approve") payload.pocket_rank = app.selectedPocket?.rank;
     if (action === "override") payload.center = ["x", "y", "z"].map((axis) => Number($(`center-${axis}`).value));
     if (action === "override") payload.size = ["x", "y", "z"].map((axis) => Number($(`size-${axis}`).value));
-    try { const response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast("Human decision recorded"); await fetchState(); } catch (error) { toast(error.message, true); }
+    try { const response = await postJson("/api/review", payload); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast("Human decision recorded"); await fetchState(); } catch (error) { toast(error.message, true); }
   }
 
   async function continueWorkflow() {
-    try { const response = await fetch("/api/continue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: $("chat-model").value.trim(), conversation_id: app.chatId }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast(data.status === "already_running" ? "Workflow is already running" : data.status === "already_complete" ? "Workflow is already complete" : "Workflow started"); await fetchState(); } catch (error) { toast(error.message, true); }
+    try { const response = await postJson("/api/continue", { model: $("chat-model").value.trim(), conversation_id: app.chatId }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast(data.status === "already_running" ? "Workflow is already running" : data.status === "already_complete" ? "Workflow is already complete" : "Workflow started"); await fetchState(); } catch (error) { toast(error.message, true); }
   }
 
   function toast(message, error = false) { const node = $("toast"); node.textContent = message; node.className = `toast show ${error ? "error" : ""}`; window.clearTimeout(node._timer); node._timer = window.setTimeout(() => node.classList.remove("show"), 3500); }
@@ -1184,7 +1250,7 @@
     $("open-terminal").addEventListener("click", openTerminalDock);
     $("close-terminal").addEventListener("click", closeTerminalDock);
     $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.proteinViewer.zoomTo(); app.proteinViewer.render(); } });
-    $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt("New project-relative file name"); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await fetch("/api/project/file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, content: "" }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
+    $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt("New project-relative file name"); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
     $("chat-model").addEventListener("change", (event) => localStorage.setItem("dock-agent-chat-model", event.target.value.trim()));
     $("open-model-settings").addEventListener("click", () => {
       $("model-settings-dialog").showModal();
@@ -1200,9 +1266,9 @@
     $("file-editor").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveProjectFile(); } });
     $("chat-input").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); $("chat-form").requestSubmit(); } });
     document.querySelectorAll("[data-protein-style]").forEach((button) => button.addEventListener("click", () => setProteinStyle(button.dataset.proteinStyle)));
-    $("structure-select").addEventListener("change", async (event) => { app.structureArtifact = structureCandidates()[Number(event.target.value)]; if (app.proteinViewer) { app.proteinViewer = null; } await loadProtein(); });
-    $("pose-select").addEventListener("change", async () => { if (app.proteinViewer) { app.proteinViewer = null; } await loadProtein(); });
-    $("ligand-select").addEventListener("change", (event) => { app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview); $("continue-button").addEventListener("click", continueWorkflow);
+    $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
+    $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
+    $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview); $("continue-button").addEventListener("click", continueWorkflow);
     $("workflow-zoom-out").addEventListener("click", () => zoomWorkflowCanvas(-.1));
     $("workflow-zoom-in").addEventListener("click", () => zoomWorkflowCanvas(.1));
     $("workflow-fit").addEventListener("click", fitWorkflowCanvas);

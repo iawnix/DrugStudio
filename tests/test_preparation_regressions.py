@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import tempfile
 import unittest
 from dataclasses import replace
@@ -6,12 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from dock_agent.contracts import LigandSpec, TargetSpec
-from dock_agent.storage import ArtifactStore
-from dock_agent.ports import ToolContext, ToolResult
-from dock_agent.integrations.pdbfixer_bridge import _filtered_pdb, _label
-from dock_agent.integrations.receptor_pipeline import PDBFixerReceptorPreparer, ReceptorPreparationPolicy
-from dock_agent.integrations.ligand_pipeline import LigandPreparationPipeline
+from drugstudio.contracts import LigandSpec, TargetSpec
+from drugstudio.storage import ArtifactStore
+from drugstudio.ports import ToolContext, ToolResult
+from drugstudio.integrations.pdbfixer_bridge import _filtered_pdb, _label
+from drugstudio.integrations.receptor_pipeline import PDBFixerReceptorPreparer, ReceptorPreparationPolicy
+from drugstudio.integrations.ligand_pipeline import LigandPreparationPipeline
 
 
 def atom(serial, name, residue, number):
@@ -25,6 +26,7 @@ class PreparationRegressions(unittest.TestCase):
         residue.insertionCode='B'
         self.assertEqual(_label(residue),'A:99B')
 
+    @unittest.skipUnless(importlib.util.find_spec("pdbfixer"), "requires optional PDBFixer environment")
     def test_polymer_hetatm_survives_and_stale_connections_are_removed(self):
         with tempfile.TemporaryDirectory() as d:
             src, dst = Path(d)/'in.pdb', Path(d)/'out.pdb'
@@ -37,6 +39,7 @@ class PreparationRegressions(unittest.TestCase):
             self.assertNotIn('CONECT    4',dst.read_text())
             self.assertEqual(len(m['protected_polymer_heterogens']),1)
 
+    @unittest.skipUnless(importlib.util.find_spec("pdbfixer"), "requires optional PDBFixer environment")
     def test_keep_all_policy_is_respected(self):
         with tempfile.TemporaryDirectory() as d:
             src,dst=Path(d)/'in.pdb',Path(d)/'out.pdb'
@@ -75,7 +78,7 @@ class PreparationRegressions(unittest.TestCase):
                 (wd/'receptor_repair.json').write_text('{}\n')
                 kwargs['log_path'].write_text('done\n')
             preparer=PDBFixerReceptorPreparer(store)
-            with patch('dock_agent.integrations.receptor_pipeline._run',side_effect=worker) as run:
+            with patch('drugstudio.integrations.receptor_pipeline._run',side_effect=worker) as run:
                 self.assertEqual(preparer.prepare(source,target,context).status,'succeeded')
                 self.assertEqual(preparer.prepare(source,target,context).status,'succeeded')
                 self.assertEqual(run.call_count,1)

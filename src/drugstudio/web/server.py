@@ -50,12 +50,24 @@ STATIC_ROOT = Path(__file__).with_name("static")
 class WebApplication:
     def __init__(self, run_root: Path, workspace: Path, runs_root: Path | None = None,
                  workspace_root: Path | None = None, web_token: str | None = None):
-        self.run_root = run_root.resolve()
+        # These two are *defaults* for requests that name no scope.  They are
+        # never reassigned: every request resolves its own project and run from
+        # its own parameters, so two tabs (or two people) cannot clobber each
+        # other's selection.
+        self.default_run_root = run_root.resolve()
         self.workspace = workspace.resolve()
         self.runs_root = (runs_root or run_root.parent).resolve()
         self.workspace_root = (workspace_root or self.workspace).resolve()
-        self.run_root.relative_to(self.runs_root)
+        self.default_run_root.relative_to(self.runs_root)
         self.web_token = web_token
+        # Host values this server will answer to.  Without this check a page on
+        # any origin can reach a loopback bind through DNS rebinding, and the
+        # terminal endpoints hand out a shell.
+        self.allowed_hosts: set[str] = set()
+        # Session identifiers are random and unrelated to the access token, so
+        # a leaked cookie cannot be replayed as the token itself.
+        self._sessions: set[str] = set()
+        self._session_lock = threading.Lock()
         self.chat_store = self.runs_root / ".workbench" / "conversations.json"
         self._chat_lock = threading.Lock()
         self._llm_config = {
@@ -67,52 +79,96 @@ class WebApplication:
         self._metadata_lock = threading.Lock()
         self.workbench_root = self.runs_root / ".workbench"
         self.projects_index = self.workbench_root / "projects.json"
-        self.project_root = self._initial_project_root()
-        raw_manifest = self.manifest()
-        self.ensure_run_metadata(raw_manifest)
+        self.default_project_root = self._initial_project_root()
+        raw_manifest = self.manifest(self.default_run_root)
+        self.ensure_run_metadata(self.default_run_root, raw_manifest)
         # One startup pass also materializes sidecars for older sibling runs.
         with self._metadata_lock:
             self._refresh_project_index_locked()
-        self.events = EventWriter(self.run_root, str(raw_manifest.get("run_id", self.run_root.name)))
-        self._process: subprocess.Popen[str] | None = None
+        self._event_writers: dict[Path, EventWriter] = {}
+        self._event_lock = threading.Lock()
+        # One workflow process per run, not one per server.
+        self._processes: dict[Path, subprocess.Popen[str]] = {}
         self._process_lock = threading.Lock()
         self._terminal_lock = threading.Lock()
         self._terminals: dict[str, dict] = {}
 
+    # ----- scope resolution -------------------------------------------------
+
+    def resolve_run(self, run_key: str = "") -> Path:
+        """Resolve a request-supplied run key to a directory under runs_root."""
+        if not run_key:
+            return self.default_run_root
+        candidate = (self.runs_root / run_key).resolve()
+        try:
+            candidate.relative_to(self.runs_root)
+        except ValueError as exc:
+            raise ValueError("run key escapes the configured runs root") from exc
+        if not (candidate / "manifest.json").is_file():
+            # Fall back to matching on run_id for older clients and links.
+            match = next((item for item in self.list_runs() if item["run_id"] == run_key), None)
+            if match is None:
+                raise ValueError(f"run not found in {self.runs_root}: {run_key}")
+            candidate = (self.runs_root / match["run_key"]).resolve()
+        return candidate
+
+    def resolve_project(self, project_id: str = "") -> Path:
+        if not project_id:
+            return self.default_project_root
+        return self._project_for_id(project_id)
+
+    def project_id_of(self, project_root: Path) -> str:
+        return ("." if project_root == self.workspace_root
+                else project_root.relative_to(self.workspace_root).as_posix())
+
+    def events_for(self, run_root: Path) -> EventWriter:
+        run_root = run_root.resolve()
+        with self._event_lock:
+            writer = self._event_writers.get(run_root)
+            if writer is None:
+                try:
+                    run_id = str(self.manifest(run_root).get("run_id", run_root.name))
+                except (OSError, json.JSONDecodeError, FileNotFoundError):
+                    run_id = run_root.name
+                writer = EventWriter(run_root, run_id)
+                self._event_writers[run_root] = writer
+            return writer
+
     def _initial_project_root(self) -> Path:
         try:
-            relative = self.run_root.relative_to(self.workspace_root)
+            relative = self.default_run_root.relative_to(self.workspace_root)
             first = relative.parts[0]
             candidate = self.workspace_root / first
             return candidate if candidate.is_dir() else self.workspace_root
         except (ValueError, IndexError):
             return self.workspace_root
 
-    def list_projects(self) -> list[dict]:
+    def list_projects(self, project_root: Path | None = None) -> list[dict]:
+        selected = (project_root or self.default_project_root).resolve()
         rows = []
         for path in sorted(self.workspace_root.iterdir(), key=lambda item: item.name.casefold()):
             if path.name.startswith(".") or not path.is_dir() or path.is_symlink():
                 continue
             rows.append({"project_id": path.relative_to(self.workspace_root).as_posix(),
-                         "name": path.name, "selected": path.resolve() == self.project_root})
-        if self.workspace_root.resolve() == self.project_root.resolve():
+                         "name": path.name, "selected": path.resolve() == selected})
+        if self.workspace_root.resolve() == selected:
             rows.insert(0, {"project_id": ".", "name": self.workspace_root.name, "selected": True})
         return rows
 
-    def project_identity(self) -> dict:
-        return {"project_id": "." if self.project_root == self.workspace_root else self.project_root.relative_to(self.workspace_root).as_posix(),
-                "name": self.project_root.name}
+    def project_identity(self, project_root: Path | None = None) -> dict:
+        root = project_root or self.default_project_root
+        return {"project_id": self.project_id_of(root), "name": root.name}
 
-    def ensure_run_metadata(self, manifest: dict | None = None, **updates: object) -> dict:
-        manifest = manifest or self.manifest()
+    def ensure_run_metadata(self, run_root: Path, manifest: dict | None = None, **updates: object) -> dict:
+        manifest = manifest or self.manifest(run_root)
         with self._metadata_lock:
-            metadata_path = self.run_root / "run-meta.json"
-            existing = load_run_metadata(self.run_root, self.runs_root, manifest)
+            metadata_path = run_root / "run-meta.json"
+            existing = load_run_metadata(run_root, self.runs_root, manifest)
             changed = not metadata_path.is_file()
             for key, item in updates.items():
                 if item is not None and existing.get(key) != item:
                     changed = True
-            metadata = save_run_metadata(self.run_root, self.runs_root, manifest, **updates) if changed else existing
+            metadata = save_run_metadata(run_root, self.runs_root, manifest, **updates) if changed else existing
             if changed or not self.projects_index.is_file():
                 self._refresh_project_index_locked()
             return metadata
@@ -144,9 +200,9 @@ class WebApplication:
                 index = self._refresh_project_index_locked()
             return sorted(index["projects"].values(), key=lambda item: str(item.get("name", "")).casefold())
 
-    def provenance(self, *, artifact_id: str = "", path: str = "", stage: str = "") -> dict:
-        """Return a bounded upstream artifact chain for the selected run."""
-        manifest = self.manifest()
+    def provenance(self, run_root: Path, *, artifact_id: str = "", path: str = "", stage: str = "") -> dict:
+        """Return a bounded upstream artifact chain for the requested run."""
+        manifest = self.manifest(run_root)
         entries: dict[str, dict] = {}
         for stage_name, items in (manifest.get("artifacts") or {}).items():
             for item in items or []:
@@ -154,7 +210,7 @@ class WebApplication:
                     continue
                 record = dict(item)
                 record["stage"] = stage_name
-                record["exists"] = self._artifact_exists(record.get("path", ""))
+                record["exists"] = self._artifact_exists(run_root, record.get("path", ""))
                 entries[str(record.get("artifact_id"))] = record
         target = None
         if artifact_id:
@@ -191,21 +247,22 @@ class WebApplication:
                                "metadata": _small_metadata(result.get("metadata", {})),
                                "error": result.get("error")})
         chain_ids = {item.get("artifact_id") for item in chain}
+        chain_stages = {item.get("stage") for item in chain}
         events = []
-        for event in self.events.read_since(0, limit=100000):
-            if event.get("artifact_id") in chain_ids or event.get("stage") in {item.get("stage") for item in chain}:
+        for event in self.events_for(run_root).read_since(0, limit=100000):
+            if event.get("artifact_id") in chain_ids or event.get("stage") in chain_stages:
                 events.append(_small_value(event))
-        return {"run_id": manifest.get("run_id"), "run_key": self.run_key(self.run_root),
-                "run_meta": self.run_metadata(self.run_root, manifest),
+        return {"run_id": manifest.get("run_id"), "run_key": self.run_key(run_root),
+                "run_meta": self.run_metadata(run_root, manifest),
                 "target": self._public_provenance_item(target) if target else None,
                 "chain": chain, "stages": stages, "events": events[-100:]}
 
-    def _artifact_exists(self, relative: str) -> bool:
+    def _artifact_exists(self, run_root: Path, relative: str) -> bool:
         if not relative:
             return False
-        candidate = (self.run_root / relative).resolve()
+        candidate = (run_root / relative).resolve()
         try:
-            candidate.relative_to(self.run_root.resolve())
+            candidate.relative_to(run_root.resolve())
         except ValueError:
             return False
         return candidate.is_file()
@@ -219,8 +276,26 @@ class WebApplication:
                 "sha256": item.get("sha256"), "parent_ids": item.get("parent_ids", []),
                 "exists": bool(item.get("exists")), "metadata": _small_metadata(item.get("metadata", {}))}
 
-    def model_config(self) -> dict:
-        run_model = _public_model_info(self.run_root) or {}
+    def host_allowed(self, host_header: str) -> bool:
+        if not self.allowed_hosts:
+            return True
+        return (host_header or "").strip().lower() in self.allowed_hosts
+
+    def open_session(self) -> str:
+        session_id = secrets.token_urlsafe(32)
+        with self._session_lock:
+            if len(self._sessions) > 256:
+                self._sessions.clear()
+            self._sessions.add(session_id)
+        return session_id
+
+    def session_valid(self, session_id: str) -> bool:
+        with self._session_lock:
+            return any(hmac.compare_digest(session_id, known) for known in self._sessions)
+
+    def model_config(self, run_root: Path | None = None, *, use_default: bool = True) -> dict:
+        root = run_root or (self.default_run_root if use_default else None)
+        run_model = (_public_model_info(root) or {}) if root is not None else {}
         with self._llm_config_lock:
             return {
                 "base_url": self._llm_config["base_url"] or run_model.get("base_url", ""),
@@ -333,29 +408,16 @@ class WebApplication:
         return chat
 
     def select_project(self, project_id: str) -> dict:
-        if project_id == ".":
-            candidate = self.workspace_root
-        else:
-            source = self.workspace_root / project_id
-            if source.is_symlink():
-                raise ValueError("project symlinks are not supported")
-            candidate = source.resolve()
-            candidate.relative_to(self.workspace_root)
-        if not candidate.is_dir() or candidate.is_symlink():
-            raise ValueError("project directory not found")
-        previous = self.project_root
-        for session_id, session in list(self._terminals.items()):
-            if session["project"] == previous:
-                try:
-                    self.stop_terminal(session_id)
-                except (OSError, ValueError):
-                    pass
-        self.project_root = candidate
-        return {"project_id": "." if candidate == self.workspace_root else candidate.relative_to(self.workspace_root).as_posix(),
-                "name": candidate.name}
+        """Validate a project the client is switching to.
+
+        Selection lives in the browser now: the server keeps no "current
+        project", so this only confirms the id resolves and echoes its name.
+        """
+        candidate = self._project_for_id(project_id)
+        return {"project_id": self.project_id_of(candidate), "name": candidate.name}
 
     def project_file(self, relative: str, *, allow_missing: bool = False, root: Path | None = None) -> Path:
-        project_root = root or self.project_root
+        project_root = root or self.default_project_root
         candidate = (project_root / relative).resolve()
         try:
             candidate.relative_to(project_root)
@@ -366,7 +428,7 @@ class WebApplication:
         return candidate
 
     def list_project_files(self, relative: str = "", *, root: Path | None = None) -> dict:
-        project_root = root or self.project_root
+        project_root = root or self.default_project_root
         directory = self.project_file(relative, allow_missing=True, root=project_root)
         if not directory.is_dir():
             raise NotADirectoryError(relative)
@@ -425,7 +487,7 @@ class WebApplication:
                             root: Path | None = None) -> dict:
         if not command.strip() or len(command) > 20_000:
             raise ValueError("command must contain 1 to 20,000 characters")
-        project_root = root or self.project_root
+        project_root = root or self.default_project_root
         working_directory = self.project_file(cwd, allow_missing=False, root=project_root) if cwd else project_root
         if not working_directory.is_dir():
             raise NotADirectoryError(cwd)
@@ -453,13 +515,15 @@ class WebApplication:
                 "returncode": completed.returncode,
                 "stdout": stdout[-80_000:], "stderr": completed.stderr[-80_000:]}
 
-    def start_terminal(self, cwd: str = "") -> dict:
-        working_directory = self.project_file(cwd, allow_missing=False) if cwd else self.project_root
+    def start_terminal(self, cwd: str = "", *, project_root: Path | None = None) -> dict:
+        project_root = project_root or self.default_project_root
+        working_directory = (self.project_file(cwd, allow_missing=False, root=project_root)
+                             if cwd else project_root)
         if not working_directory.is_dir():
             raise NotADirectoryError(cwd)
         with self._terminal_lock:
             for session_id, session in self._terminals.items():
-                if session["project"] == self.project_root and session["process"].poll() is None:
+                if session["project"] == project_root and session["process"].poll() is None:
                     return {"session_id": session_id, "cwd": session["cwd"]}
             master, slave = pty.openpty()
             file_control.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 110, 0, 0))
@@ -473,14 +537,14 @@ class WebApplication:
             os.close(slave)
             os.set_blocking(master, False)
             session_id = uuid.uuid4().hex
-            self._terminals[session_id] = {"process": process, "fd": master, "project": self.project_root,
-                                           "cwd": working_directory.relative_to(self.project_root).as_posix(),
+            self._terminals[session_id] = {"process": process, "fd": master, "project": project_root,
+                                           "cwd": working_directory.relative_to(project_root).as_posix(),
                                            "buffer": "", "base": 0}
             return {"session_id": session_id, "cwd": self._terminals[session_id]["cwd"]}
 
-    def terminal_output(self, session_id: str, since: int = 0) -> dict:
+    def terminal_output(self, session_id: str, since: int = 0, *, project_root: Path | None = None) -> dict:
         with self._terminal_lock:
-            session = self._terminal(session_id)
+            session = self._terminal(session_id, project_root)
             chunks = []
             while select.select([session["fd"]], [], [], 0)[0]:
                 try:
@@ -512,25 +576,25 @@ class WebApplication:
                 self._terminals.pop(session_id, None)
             return result
 
-    def terminal_input(self, session_id: str, value: str) -> dict:
+    def terminal_input(self, session_id: str, value: str, *, project_root: Path | None = None) -> dict:
         if len(value) > 20_000:
             raise ValueError("terminal input is too large")
         with self._terminal_lock:
-            session = self._terminal(session_id)
+            session = self._terminal(session_id, project_root)
             os.write(session["fd"], value.encode("utf-8"))
             return {"sent": len(value)}
 
-    def resize_terminal(self, session_id: str, columns: int, rows: int) -> dict:
+    def resize_terminal(self, session_id: str, columns: int, rows: int, *, project_root: Path | None = None) -> dict:
         columns = max(20, min(int(columns), 300))
         rows = max(5, min(int(rows), 120))
         with self._terminal_lock:
-            session = self._terminal(session_id)
+            session = self._terminal(session_id, project_root)
             file_control.ioctl(session["fd"], termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
             return {"columns": columns, "rows": rows}
 
-    def stop_terminal(self, session_id: str) -> dict:
+    def stop_terminal(self, session_id: str, *, project_root: Path | None = None) -> dict:
         with self._terminal_lock:
-            session = self._terminal(session_id)
+            session = self._terminal(session_id, project_root)
             process = session["process"]
             if process.poll() is None:
                 try:
@@ -555,19 +619,26 @@ class WebApplication:
             except (OSError, ValueError):
                 pass
 
-    def _terminal(self, session_id: str) -> dict:
+    def _terminal(self, session_id: str, project_root: Path | None = None) -> dict:
+        """Look up a session; with a project_root, also check it owns the session.
+
+        Internal callers (shutdown) pass None because they act on every
+        session regardless of which project opened it.
+        """
         session = self._terminals.get(session_id)
-        if session is None or session["project"] != self.project_root:
-            raise ValueError("terminal session is missing or belongs to another project")
+        if session is None:
+            raise ValueError("terminal session is missing")
+        if project_root is not None and session["project"] != project_root:
+            raise ValueError("terminal session belongs to another project")
         return session
 
-    def chat(self, payload: dict) -> dict:
+    def chat(self, payload: dict, *, project_root: Path | None = None,
+             run_root: Path | None = None) -> dict:
         with self._llm_config_lock:
             config = dict(self._llm_config)
         if not config["api_key"]:
             raise RuntimeError("AI chat needs an API key; configure it in model settings")
-        project_root = self.project_root
-        run_root = self.run_root
+        project_root = project_root or self.default_project_root
         project_name = project_root.name
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -616,7 +687,7 @@ class WebApplication:
         tools = [StructuredTool.from_function(list_files), StructuredTool.from_function(read_file),
                  StructuredTool.from_function(write_file), StructuredTool.from_function(run_command)]
         tool_map = {tool.name: tool for tool in tools}
-        run_model = _public_model_info(run_root) or {}
+        run_model = (_public_model_info(run_root) or {}) if run_root is not None else {}
         requested_model = str(payload.get("model") or config["model"] or run_model.get("model") or "gpt-4.1-mini").strip()
         if len(requested_model) > 160:
             raise ValueError("model name is too long")
@@ -649,16 +720,35 @@ class WebApplication:
                 messages.append(ToolMessage(content=str(result)[:80_000], tool_call_id=call["id"]))
         return {"reply": "Reached the tool-call limit for one response. Continue with a follow-up.", "actions": actions}
 
-    def manifest(self) -> dict:
-        path = self.run_root / "manifest.json"
+    def manifest(self, run_root: Path | None = None) -> dict:
+        root = run_root or self.default_run_root
+        path = root / "manifest.json"
         if not path.is_file():
-            raise FileNotFoundError(f"manifest.json not found under {self.run_root}")
+            raise FileNotFoundError(f"manifest.json not found under {root}")
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def snapshot(self) -> dict:
-        raw = self.manifest()
-        run_meta = self.ensure_run_metadata(raw)
-        model_info = _public_model_info(self.run_root)
+    def empty_snapshot(self, project_root: Path) -> dict:
+        """Keep project tools available without borrowing another project's run."""
+        config = self.model_config(use_default=False)
+        return {
+            "project": self.project_identity(project_root),
+            "chat_available": config["api_key_configured"], "model_config": config,
+            "run_key": "", "run_id": None, "run_meta": None, "status": "idle",
+            "current_node": None, "target": {}, "ligands": [], "policy": {},
+            "stage_results": {}, "artifacts": {}, "tasks": [], "approvals": [],
+            "human_decisions": [], "overrides": {}, "decisions": [], "failures": [],
+            "report": None, "model": None,
+            "costs": {"models": {}, "pricing": {}, "total_calls": 0,
+                      "input_tokens": 0, "output_tokens": 0, "estimated_usd": None},
+            "control_request": None, "server": {"workflow_running": False},
+        }
+
+    def snapshot(self, run_root: Path | None = None, project_root: Path | None = None) -> dict:
+        run_root = run_root or self.default_run_root
+        project_root = project_root or self.default_project_root
+        raw = self.manifest(run_root)
+        run_meta = self.ensure_run_metadata(run_root, raw)
+        model_info = _public_model_info(run_root)
         artifacts = {
             stage: [
                 {
@@ -672,13 +762,13 @@ class WebApplication:
             ]
             for stage, items in raw.get("artifacts", {}).items()
         }
-        report = _latest_json_artifact(self.run_root, raw, "assessment_data")
-        model_config = self.model_config()
+        report = _latest_json_artifact(run_root, raw, "assessment_data")
+        model_config = self.model_config(run_root)
         return {
-            "project": self.project_identity(),
+            "project": self.project_identity(project_root),
             "chat_available": model_config["api_key_configured"],
             "model_config": model_config,
-            "run_key": self.run_key(self.run_root),
+            "run_key": self.run_key(run_root),
             "run_id": raw.get("run_id"),
             "run_meta": run_meta,
             "target": raw.get("target", {}),
@@ -696,12 +786,26 @@ class WebApplication:
             "failures": raw.get("failures", []),
             "report": report,
             "model": model_info,
-            "costs": self.cost_summary(),
-            "control_request": self.events.control_request(),
-            "server": {"workflow_running": self.workflow_running()},
+            "costs": self.cost_summary(run_root),
+            "control_request": self.events_for(run_root).control_request(),
+            "server": {"workflow_running": self.workflow_running(run_root)},
         }
 
-    def list_runs(self) -> list[dict]:
+    def owning_project_id(self, run_root: Path, metadata: dict | None = None) -> str:
+        """Which selectable project a run belongs to.
+
+        The sidecar's own project_id is derived relative to runs_root, which is
+        a different namespace from the project ids the UI uses (relative to
+        workspace_root).  Walking up from the run directory reconciles the two,
+        so run lists and project lists agree.
+        """
+        try:
+            relative = run_root.resolve().relative_to(self.workspace_root)
+        except ValueError:
+            return str((metadata or {}).get("project_id") or ".")
+        return relative.parts[0] if relative.parts else "."
+
+    def list_runs(self, project_id: str = "", selected_run_root: Path | None = None) -> list[dict]:
         runs = []
         for manifest_path in sorted(self.runs_root.rglob("manifest.json")):
             path = manifest_path.parent
@@ -710,11 +814,14 @@ class WebApplication:
             except (OSError, json.JSONDecodeError):
                 continue
             metadata = self.run_metadata(path, manifest)
-            run_key = self.run_key(path)
-            runs.append({"run_key": run_key, "run_id": manifest.get("run_id", path.name), "status": manifest.get("status"),
+            owner = self.owning_project_id(path, metadata)
+            if project_id and project_id != "." and owner != project_id:
+                continue
+            runs.append({"run_key": self.run_key(path), "run_id": manifest.get("run_id", path.name),
+                         "status": manifest.get("status"),
                          "target_id": manifest.get("target", {}).get("target_id"), "name": path.name,
-                         "selected": path.resolve() == self.run_root,
-                         "project_id": metadata.get("project_id"),
+                         "selected": selected_run_root is not None and path.resolve() == selected_run_root.resolve(),
+                         "project_id": owner,
                          "conversation_id": metadata.get("conversation_id"),
                          "parent_run_id": metadata.get("parent_run_id"),
                          "created_at": metadata.get("created_at")})
@@ -724,35 +831,35 @@ class WebApplication:
         return path.resolve().relative_to(self.runs_root).as_posix()
 
     def select_run(self, run_key: str) -> dict:
-        if self.workflow_running():
-            raise RuntimeError("stop or pause the active workflow before switching runs")
-        selected = next((item for item in self.list_runs()
-                         if item["run_key"] == run_key or item["run_id"] == run_key), None)
-        if selected is None:
-            raise ValueError(f"run not found in {self.runs_root}: {run_key}")
-        candidate = (self.runs_root / selected["run_key"]).resolve()
-        candidate.relative_to(self.runs_root)
-        self.run_root = candidate
-        manifest = self.manifest()
-        self.ensure_run_metadata(manifest)
-        self.events = EventWriter(self.run_root, str(manifest.get("run_id", candidate.name)))
-        return {"selected": self.run_key(candidate), "run_id": manifest.get("run_id")}
+        """Validate a run the client is switching to.
 
-    def request_control(self, action: str) -> dict:
+        As with projects, the selection itself lives in the browser; the server
+        only confirms the key resolves to a real run.
+        """
+        candidate = self.resolve_run(run_key)
+        manifest = self.manifest(candidate)
+        self.ensure_run_metadata(candidate, manifest)
+        return {"selected": self.run_key(candidate), "run_id": manifest.get("run_id"),
+                "project_id": self.owning_project_id(candidate, self.run_metadata(candidate, manifest))}
+
+    def request_control(self, action: str, run_root: Path | None = None) -> dict:
+        run_root = run_root or self.default_run_root
         if action not in {"pause", "cancel"}:
             raise ValueError("control action must be pause or cancel")
-        if not self.workflow_running():
+        if not self.workflow_running(run_root):
             raise RuntimeError("there is no active web-started workflow to control")
-        self.events.set_control_request(action)
-        event = self.events.emit("control_requested", status=f"{action}_requested", action=action)
+        events = self.events_for(run_root)
+        events.set_control_request(action)
+        event = events.emit("control_requested", status=f"{action}_requested", action=action)
         return {"status": f"{action}_requested", "event_id": event["event_id"]}
 
-    def rerun_from(self, stage: str) -> dict:
+    def rerun_from(self, stage: str, run_root: Path | None = None) -> dict:
+        run_root = run_root or self.default_run_root
         if stage not in {"structure", "receptor", "ligand", "pocket", "docking", "assessment"}:
             raise ValueError("unsupported rerun stage")
-        if self.workflow_running():
+        if self.workflow_running(run_root):
             raise RuntimeError("wait for the active workflow to reach a safe checkpoint before branching")
-        source = self.run_root
+        source = run_root
         lock_path = source / ".run.lock"
         with lock_path.open("a") as lock:
             try:
@@ -841,14 +948,15 @@ class WebApplication:
         return {"run_id": branch.name, "run_key": self.run_key(branch),
                 "run_root": str(branch), "rerun_from": stage}
 
-    def save_pricing(self, payload: dict) -> dict:
+    def save_pricing(self, payload: dict, run_root: Path | None = None) -> dict:
+        run_root = run_root or self.default_run_root
         model = str(payload.get("model") or "").strip()
         if not model:
             raise ValueError("model name is required")
         rates = {key: float(payload[key]) for key in ("input_usd_per_million", "output_usd_per_million")}
         if any(value < 0 or not math.isfinite(value) for value in rates.values()):
             raise ValueError("token rates must be non-negative")
-        path = self.run_root / "inputs" / "model-pricing.json"
+        path = run_root / "inputs" / "model-pricing.json"
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -858,41 +966,51 @@ class WebApplication:
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temp, path)
-        self.events.emit("pricing_updated", model=model, **rates)
-        return self.cost_summary()
+        self.events_for(run_root).emit("pricing_updated", model=model, **rates)
+        return self.cost_summary(run_root)
 
-    def cost_summary(self) -> dict:
-        events = self.events.read_since(0, limit=100000)
-        usage_records = [event for event in events
-                         if event.get("type") == "model_finished" and event.get("status") == "completed"]
-        if not usage_records:
-            model_default = (_public_model_info(self.run_root) or {}).get("model", "unknown")
-            for trace in (self.run_root / "logs").glob("react-*.jsonl"):
-                try:
-                    for line in trace.read_text(encoding="utf-8").splitlines():
-                        record = json.loads(line)
-                        if record.get("type") == "ai":
-                            usage_records.append({"model": record.get("response_metadata", {}).get("model_name", model_default),
-                                                  "status": "completed", "usage": record.get("usage_metadata")})
-                except (OSError, json.JSONDecodeError):
-                    continue
-        try:
-            pricing = json.loads((self.run_root / "inputs" / "model-pricing.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pricing = {}
+    def _usage_from_traces(self, run_root: Path) -> dict[str, dict]:
+        """Fall back to the ReAct traces for runs that predate usage events."""
+        model_default = (_public_model_info(run_root) or {}).get("model", "unknown")
         models: dict[str, dict] = {}
-        for event in usage_records:
-            model = str(event.get("model") or "unknown")
-            usage = event.get("usage") or {}
-            prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
-            completion = usage.get("output_tokens", usage.get("completion_tokens"))
-            row = models.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0,
-                                            "reported_calls": 0, "estimated_usd": None})
-            row["calls"] += 1
-            if prompt is not None and completion is not None:
+        for trace in (run_root / "logs").glob("react-*.jsonl"):
+            try:
+                lines = trace.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") != "ai":
+                    continue
+                model = str(record.get("response_metadata", {}).get("model_name", model_default))
+                usage = record.get("usage_metadata") or {}
+                row = models.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+                                                "reported_calls": 0, "estimated_usd": None})
+                row["calls"] += 1
+                prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
+                completion = usage.get("output_tokens", usage.get("completion_tokens"))
+                if prompt is None or completion is None:
+                    continue
                 row["reported_calls"] += 1
                 row["input_tokens"] += int(prompt)
                 row["output_tokens"] += int(completion)
+        return models
+
+    def cost_summary(self, run_root: Path | None = None) -> dict:
+        run_root = run_root or self.default_run_root
+        # Token totals are folded in as events are appended, so this no longer
+        # re-parses events.jsonl on every /api/state.
+        models: dict[str, dict] = {model: {**row, "estimated_usd": None}
+                                   for model, row in self.events_for(run_root).usage_by_model().items()}
+        if not models:
+            models = self._usage_from_traces(run_root)
+        try:
+            pricing = json.loads((run_root / "inputs" / "model-pricing.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pricing = {}
         for model, row in models.items():
             rate = pricing.get(model)
             if rate and row["reported_calls"] == row["calls"] and row["reported_calls"]:
@@ -905,36 +1023,45 @@ class WebApplication:
                                        if row["estimated_usd"] is not None)
                                   if models and all(row["estimated_usd"] is not None for row in models.values()) else None)}
 
-    def workflow_running(self) -> bool:
+    def workflow_running(self, run_root: Path | None = None) -> bool:
+        key = (run_root or self.default_run_root).resolve()
         with self._process_lock:
-            return self._process is not None and self._process.poll() is None
+            process = self._processes.get(key)
+            return process is not None and process.poll() is None
 
-    def events_since(self, since: int = 0) -> list[dict]:
-        return self.events.read_since(since)
-
-    def start_workflow(self, payload: dict) -> dict:
+    def any_workflow_running(self) -> bool:
         with self._process_lock:
-            if self._process is not None and self._process.poll() is None:
+            return any(process.poll() is None for process in self._processes.values())
+
+    def events_since(self, since: int = 0, run_root: Path | None = None) -> list[dict]:
+        return self.events_for(run_root or self.default_run_root).read_since(since)
+
+    def start_workflow(self, payload: dict, run_root: Path | None = None) -> dict:
+        run_root = (run_root or self.default_run_root).resolve()
+        with self._process_lock:
+            process = self._processes.get(run_root)
+            if process is not None and process.poll() is None:
                 return {"status": "already_running"}
-            current_status = self.manifest().get("status")
+            current_status = self.manifest(run_root).get("status")
             if current_status == "cancelled":
                 raise RuntimeError("this run was cancelled; create a stage rerun branch to continue")
             if current_status == "succeeded":
                 return {"status": "already_complete"}
             prompt = str(payload.get("prompt") or
                          "Inspect the run, complete the remaining workflow stages, and summarize the evidence in Chinese.")
-            model_info = _public_model_info(self.run_root) or {}
-            model_config = self.model_config()
+            model_info = _public_model_info(run_root) or {}
+            model_config = self.model_config(run_root)
             model = payload.get("model") or model_config["model"]
-            self.events.set_control_request(None)
+            self.events_for(run_root).set_control_request(None)
             conversation_id = str(payload.get("conversation_id") or "").strip() or None
             if conversation_id:
-                self.ensure_run_metadata(self.manifest(), conversation_id=conversation_id)
-            command = [sys.executable, "-m", "dock_agent.cli", "run",
-                       "--run-root", str(self.run_root), "--prompt", prompt]
+                self.ensure_run_metadata(run_root, self.manifest(run_root),
+                                         conversation_id=conversation_id)
+            command = [sys.executable, "-m", "drugstudio.cli", "run",
+                       "--run-root", str(run_root), "--prompt", prompt]
             if model:
                 command.extend(["--model", str(model)])
-            log_path = self.run_root / "logs" / f"web-run-{uuid.uuid4().hex}.log"
+            log_path = run_root / "logs" / f"web-run-{uuid.uuid4().hex}.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             handle = log_path.open("x", encoding="utf-8")
             environment = os.environ.copy()
@@ -950,15 +1077,17 @@ class WebApplication:
             if not environment.get("OPENAI_BASE_URL") and model_info.get("base_url"):
                 environment["OPENAI_BASE_URL"] = str(model_info["base_url"])
             try:
-                self._process = subprocess.Popen(command, cwd=self.workspace,
-                                                 stdout=handle, stderr=subprocess.STDOUT,
-                                                 text=True, env=environment)
+                process = subprocess.Popen(command, cwd=self.workspace,
+                                           stdout=handle, stderr=subprocess.STDOUT,
+                                           text=True, env=environment)
+                self._processes[run_root] = process
             finally:
                 handle.close()
-            return {"status": "started", "pid": self._process.pid,
-                    "log_path": str(log_path.relative_to(self.run_root))}
+            return {"status": "started", "pid": process.pid,
+                    "log_path": str(log_path.relative_to(run_root))}
 
-    def record_review(self, payload: dict) -> dict:
+    def record_review(self, payload: dict, run_root: Path | None = None) -> dict:
+        run_root = run_root or self.default_run_root
         stage = str(payload.get("stage") or "")
         action = str(payload.get("action") or "")
         reason = str(payload.get("reason") or "").strip()
@@ -969,8 +1098,8 @@ class WebApplication:
             raise ValueError("unsupported review action")
         if not reason:
             raise ValueError("a scientific reason is required")
-        command = [sys.executable, "-m", "dock_agent.cli", "review",
-                   "--run-root", str(self.run_root), "--stage", stage,
+        command = [sys.executable, "-m", "drugstudio.cli", "review",
+                   "--run-root", str(run_root), "--stage", stage,
                    "--action", action, "--reason", reason, "--actor", actor]
         pocket_rank = payload.get("pocket_rank")
         center = payload.get("center")
@@ -988,10 +1117,11 @@ class WebApplication:
             raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "review command failed")
         return json.loads(completed.stdout)
 
-    def file_path(self, relative: str) -> Path:
-        candidate = (self.run_root / relative).resolve()
+    def file_path(self, relative: str, run_root: Path | None = None) -> Path:
+        run_root = run_root or self.default_run_root
+        candidate = (run_root / relative).resolve()
         try:
-            candidate.relative_to(self.run_root)
+            candidate.relative_to(run_root)
         except ValueError as exc:
             raise ValueError("file path escapes the selected run") from exc
         if not candidate.is_file():
@@ -1006,8 +1136,50 @@ class Handler(BaseHTTPRequestHandler):
     def app(self) -> WebApplication:
         return self.server.app  # type: ignore[attr-defined]
 
+    def _reject_foreign_host(self) -> bool:
+        """Refuse requests whose Host header this server was not bound for."""
+        if self.app.host_allowed(self.headers.get("Host", "")):
+            return False
+        self._json({"error": "unrecognized Host header"}, status=HTTPStatus.MISDIRECTED_REQUEST)
+        return True
+
+    def _run_scope(self, source: dict, *, required: bool = True) -> Path | None:
+        """Resolve a run within the supplied project, never across projects."""
+        value = source.get("run_key", source.get("run_id", ""))
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        project_id = source.get("project_id", "")
+        if isinstance(project_id, list):
+            project_id = project_id[0] if project_id else ""
+        if project_id:
+            project_id = self.app.project_id_of(self.app.resolve_project(str(project_id)))
+        if value:
+            root = self.app.resolve_run(str(value))
+            if project_id and project_id != ".":
+                owner = self.app.owning_project_id(root, self.app.run_metadata(root))
+                if owner != project_id:
+                    raise ValueError("run belongs to another project")
+            return root
+        if not project_id or project_id == ".":
+            return self.app.default_run_root  # Legacy requests and workspace-wide view.
+        runs = self.app.list_runs(project_id)
+        if runs:
+            newest = max(runs, key=lambda item: (item.get("created_at") or "", item["run_key"]))
+            return self.app.resolve_run(newest["run_key"])
+        if required:
+            raise ValueError("this project has no run; create a run first")
+        return None
+
+    def _project_scope(self, source: dict) -> Path:
+        value = source.get("project_id", "")
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        return self.app.resolve_project(str(value or ""))
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._reject_foreign_host():
+            return
         try:
             if parsed.path == "/api/auth":
                 self._json({"required": self.app.web_token is not None, "authorized": self._authorized()})
@@ -1015,41 +1187,47 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path.startswith("/api/") and parsed.path not in {"/api/health", "/api/auth"} and not self._authorized():
                 self._json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
                 return
+            query = parse_qs(parsed.query)
             if parsed.path == "/api/state":
-                self._json(self.app.snapshot())
+                run_root = self._run_scope(query, required=False)
+                project_root = self._project_scope(query)
+                self._json(self.app.snapshot(run_root, project_root) if run_root is not None
+                           else self.app.empty_snapshot(project_root))
             elif parsed.path == "/api/model-config":
-                self._json(self.app.model_config())
+                self._json(self.app.model_config(self._run_scope(query, required=False), use_default=False))
             elif parsed.path == "/api/runs":
-                self._json({"runs": self.app.list_runs()})
+                self._json({"runs": self.app.list_runs(query.get("project_id", [""])[0],
+                                                       self._run_scope(query, required=False))})
             elif parsed.path == "/api/projects":
-                self._json({"projects": self.app.list_projects(), "selected": self.app.project_identity(),
+                project_root = self._project_scope(query)
+                self._json({"projects": self.app.list_projects(project_root),
+                            "selected": self.app.project_identity(project_root),
                             "workbench_projects": self.app.workbench_projects()})
             elif parsed.path == "/api/provenance":
-                query = parse_qs(parsed.query)
                 self._json(self.app.provenance(
+                    self._run_scope(query),
                     artifact_id=query.get("artifact_id", [""])[0],
                     path=query.get("path", [""])[0],
                     stage=query.get("stage", [""])[0]))
             elif parsed.path == "/api/chats":
-                query = parse_qs(parsed.query)
                 self._json(self.app.list_chats(query.get("project_id", [""])[0]))
             elif parsed.path == "/api/project/files":
-                query = parse_qs(parsed.query)
-                self._json(self.app.list_project_files(query.get("path", [""])[0]))
+                self._json(self.app.list_project_files(query.get("path", [""])[0],
+                                                       root=self._project_scope(query)))
             elif parsed.path == "/api/project/file":
-                query = parse_qs(parsed.query)
-                self._json(self.app.read_project_file(query.get("path", [""])[0]))
+                self._json(self.app.read_project_file(query.get("path", [""])[0],
+                                                      root=self._project_scope(query)))
             elif parsed.path == "/api/project/terminal/output":
-                query = parse_qs(parsed.query)
-                self._json(self.app.terminal_output(query.get("session_id", [""])[0], int(query.get("since", ["0"])[0])))
+                self._json(self.app.terminal_output(query.get("session_id", [""])[0],
+                                                    int(query.get("since", ["0"])[0]),
+                                                    project_root=self._project_scope(query)))
             elif parsed.path == "/api/events":
                 self._events(parsed)
             elif parsed.path == "/api/file":
-                query = parse_qs(parsed.query)
                 relative = query.get("path", [""])[0]
-                self._file(self.app.file_path(relative))
+                self._file(self.app.file_path(relative, self._run_scope(query)))
             elif parsed.path == "/api/health":
-                self._json({"status": "ok", "workflow_running": self.app.workflow_running()})
+                self._json({"status": "ok", "workflow_running": self.app.any_workflow_running()})
             else:
                 self._static(parsed.path)
         except Exception as exc:
@@ -1057,12 +1235,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._reject_foreign_host():
+            return
         try:
             payload = self._read_json()
             if parsed.path == "/api/auth":
                 if self.app.web_token and hmac.compare_digest(str(payload.get("token") or ""), self.app.web_token):
                     secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
-                    cookie = f"dock_agent_session={self.app.web_token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400{secure}"
+                    session_id = self.app.open_session()
+                    cookie = f"drugstudio_session={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400{secure}"
                     self._json({"authorized": True}, headers={"Set-Cookie": cookie})
                 else:
                     self._json({"error": "invalid access token"}, status=HTTPStatus.UNAUTHORIZED)
@@ -1071,7 +1252,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/select-project":
                 self._json(self.app.select_project(str(payload.get("project_id") or "")))
             elif parsed.path == "/api/model-config":
-                self._json(self.app.update_model_config(payload))
+                run_root = self._run_scope(payload, required=False)
+                self.app.update_model_config(payload)
+                self._json(self.app.model_config(run_root, use_default=False))
             elif parsed.path == "/api/chats":
                 self._json(self.app.create_chat(str(payload.get("project_id") or "")), status=HTTPStatus.CREATED)
             elif parsed.path == "/api/chats/save":
@@ -1086,31 +1269,38 @@ class Handler(BaseHTTPRequestHandler):
                     str(payload.get("chat_id") or ""),
                     bool(payload.get("archived", True))))
             elif parsed.path == "/api/project/file":
-                self._json(self.app.write_project_file(str(payload.get("path") or ""), str(payload.get("content") or "")))
+                self._json(self.app.write_project_file(str(payload.get("path") or ""), str(payload.get("content") or ""),
+                                                       root=self._project_scope(payload)))
             elif parsed.path == "/api/project/terminal":
-                self._json(self.app.run_project_command(str(payload.get("command") or ""), str(payload.get("cwd") or "")))
+                self._json(self.app.run_project_command(str(payload.get("command") or ""), str(payload.get("cwd") or ""),
+                                                        root=self._project_scope(payload)))
             elif parsed.path == "/api/project/terminal/start":
-                self._json(self.app.start_terminal(str(payload.get("cwd") or "")))
+                self._json(self.app.start_terminal(str(payload.get("cwd") or ""),
+                                                   project_root=self._project_scope(payload)))
             elif parsed.path == "/api/project/terminal/input":
-                self._json(self.app.terminal_input(str(payload.get("session_id") or ""), str(payload.get("input") or "")))
+                self._json(self.app.terminal_input(str(payload.get("session_id") or ""), str(payload.get("input") or ""),
+                                                   project_root=self._project_scope(payload)))
             elif parsed.path == "/api/project/terminal/resize":
-                self._json(self.app.resize_terminal(str(payload.get("session_id") or ""), int(payload.get("columns") or 110), int(payload.get("rows") or 32)))
+                self._json(self.app.resize_terminal(str(payload.get("session_id") or ""), int(payload.get("columns") or 110), int(payload.get("rows") or 32),
+                                                    project_root=self._project_scope(payload)))
             elif parsed.path == "/api/project/terminal/stop":
-                self._json(self.app.stop_terminal(str(payload.get("session_id") or "")))
+                self._json(self.app.stop_terminal(str(payload.get("session_id") or ""),
+                                                  project_root=self._project_scope(payload)))
             elif parsed.path == "/api/project/chat":
-                self._json(self.app.chat(payload))
+                self._json(self.app.chat(payload, project_root=self._project_scope(payload),
+                                         run_root=self._run_scope(payload, required=False)))
             elif parsed.path == "/api/continue":
-                self._json(self.app.start_workflow(payload), status=HTTPStatus.ACCEPTED)
+                self._json(self.app.start_workflow(payload, self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/control":
-                self._json(self.app.request_control(str(payload.get("action") or "")), status=HTTPStatus.ACCEPTED)
+                self._json(self.app.request_control(str(payload.get("action") or ""), self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/select-run":
-                self._json(self.app.select_run(str(payload.get("run_key") or payload.get("run_id") or "")))
+                self._json(self.app.select_run(self.app.run_key(self._run_scope(payload))))
             elif parsed.path == "/api/rerun":
-                self._json(self.app.rerun_from(str(payload.get("stage") or "")), status=HTTPStatus.ACCEPTED)
+                self._json(self.app.rerun_from(str(payload.get("stage") or ""), self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/pricing":
-                self._json(self.app.save_pricing(payload))
+                self._json(self.app.save_pricing(payload, self._run_scope(payload)))
             elif parsed.path == "/api/review":
-                self._json(self.app.record_review(payload))
+                self._json(self.app.record_review(payload, self._run_scope(payload)))
             else:
                 self._json({"error": "unknown endpoint"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -1131,13 +1321,14 @@ class Handler(BaseHTTPRequestHandler):
         cookie = SimpleCookie()
         try:
             cookie.load(self.headers.get("Cookie", ""))
-            session = cookie.get("dock_agent_session")
-            return session is not None and hmac.compare_digest(session.value, self.app.web_token)
+            session = cookie.get("drugstudio_session")
+            return session is not None and self.app.session_valid(session.value)
         except Exception:
             return False
 
     def _events(self, parsed) -> None:
         query = parse_qs(parsed.query)
+        run_root = self._run_scope(query)
         try:
             since = int(query.get("since", [self.headers.get("Last-Event-ID", "0")])[0] or 0)
         except ValueError:
@@ -1150,7 +1341,7 @@ class Handler(BaseHTTPRequestHandler):
         deadline = __import__("time").monotonic() + 25.0
         try:
             while __import__("time").monotonic() < deadline:
-                events = self.app.events_since(since)
+                events = self.app.events_since(since, run_root)
                 for event in events:
                     event_id = int(event.get("event_id", since))
                     self.wfile.write(f"id: {event_id}\nevent: {event.get('type', 'message')}\ndata: ".encode("utf-8"))
@@ -1173,15 +1364,24 @@ class Handler(BaseHTTPRequestHandler):
             candidate.relative_to(STATIC_ROOT.resolve())
         except ValueError as exc:
             raise FileNotFoundError(path) from exc
-        self._file(candidate)
+        self._file(candidate, inline=True)
 
-    def _file(self, path: Path) -> None:
+    def _file(self, path: Path, *, inline: bool = False) -> None:
         content = path.read_bytes()
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if not inline:
+            # Run artifacts are untrusted output from external tools.  Serving
+            # an .html or .svg artifact inline on this origin would let it read
+            # the session cookie, so everything but our own static assets is
+            # handed to the browser as a download.  The 3D viewers and editor
+            # read these through fetch(), which is unaffected.
+            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
         self.end_headers()
         self.wfile.write(content)
 
@@ -1192,6 +1392,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         for key, item in (headers or {}).items():
             self.send_header(key, item)
         self.end_headers()
@@ -1255,7 +1456,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace-root", help="parent directory containing selectable project folders")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--allowed-host", action="append", default=[],
+                        help="extra Host header value to accept, e.g. workbench.lab:443 "
+                             "(repeatable; required when serving behind a proxy)")
     return parser
+
+
+def _allowed_hosts(host: str, port: int, extra: list[str]) -> set[str]:
+    """Host header values this server answers to.
+
+    Anything else is refused, which is what stops a page on another origin
+    from reaching a loopback bind by resolving its own name to 127.0.0.1.
+    """
+    names = {"127.0.0.1", "localhost", "[::1]", "::1"}
+    if host not in {"0.0.0.0", "::", ""}:
+        names.add(host)
+        if ":" in host and not host.startswith("["):
+            names.add(f"[{host}]")
+    allowed = {f"{name}:{port}" for name in names}
+    allowed |= names if port in {80, 443} else set()
+    allowed |= {item.strip().lower() for item in extra if item.strip()}
+    return allowed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1269,8 +1490,12 @@ def main(argv: list[str] | None = None) -> int:
         run_root = max(candidates, key=lambda item: item.stat().st_mtime_ns).parent
     else:
         runs_root = run_root.parent
-    workspace = Path(__file__).resolve().parents[2]
-    workspace_root = Path(args.workspace_root).expanduser().resolve() if args.workspace_root else workspace
+    # The workbench no longer lives inside the user's workspace, so derive the
+    # subprocess working directory from the configured roots instead of from
+    # the installed package location.
+    workspace_root = (Path(args.workspace_root).expanduser().resolve()
+                      if args.workspace_root else runs_root.parent)
+    workspace = workspace_root
     web_token = os.environ.get("DOCK_AGENT_WEB_TOKEN")
     try:
         loopback_bind = ipaddress.ip_address(args.host).is_loopback
@@ -1279,6 +1504,7 @@ def main(argv: list[str] | None = None) -> int:
     if not loopback_bind and not web_token:
         web_token = secrets.token_urlsafe(32)
     app = WebApplication(run_root, workspace, runs_root, workspace_root, web_token)
+    app.allowed_hosts = _allowed_hosts(args.host, args.port, args.allowed_host)
     app.manifest()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.app = app  # type: ignore[attr-defined]

@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .. import parameters
 from ..events import EventWriter
 from ..workbench import (
     atomic_json_write,
@@ -919,6 +920,16 @@ class WebApplication:
             if normalized in invalidated:
                 state["stage_results"][key] = {"status": "stale", "previous_status": state["stage_results"][key].get("status"),
                                                 "rerun_from": stage}
+        # Approval of an old receptor/pocket does not approve newly generated
+        # chemistry or a newly ranked candidate. Keep the historical decision
+        # trail, but invalidate the approvals used for execution.
+        for approval in state.get("approvals", []):
+            if approval.get("stage") in invalidated or (
+                    approval.get("stage") == "docking_box" and "pocket" in invalidated):
+                approval["approved"] = False
+                approval["invalidated_by_rerun"] = branch.name
+        if "pocket" in invalidated:
+            state.get("overrides", {}).pop("docking_box", None)
         state["tasks"] = [] if selected <= order.index("docking") else state.get("tasks", [])
         state["status"] = "created"
         state["current_node"] = None
@@ -968,6 +979,51 @@ class WebApplication:
         os.replace(temp, path)
         self.events_for(run_root).emit("pricing_updated", model=model, **rates)
         return self.cost_summary(run_root)
+
+    def run_parameters(self, run_root: Path) -> dict:
+        """The parameter schema plus this run's current values."""
+        values = parameters.load(run_root)
+        changed = parameters.changed_from_default(values)
+        return {
+            "run_key": self.run_key(run_root),
+            "editable": not self.workflow_running(run_root),
+            "parameters": [item.as_json() for item in parameters.PARAMETERS],
+            "stage_order": list(parameters.STAGE_ORDER),
+            "values": values,
+            "changed": sorted(changed),
+            "affects_from": parameters.earliest_stage(changed),
+            "rerun_required": parameters.required_rerun(run_root, values, self.manifest(run_root).get("stage_results", {})),
+        }
+
+    def save_run_parameters(self, payload: dict, run_root: Path) -> dict:
+        incoming = payload.get("values")
+        if not isinstance(incoming, dict):
+            raise ValueError("values must be an object")
+        run_root = run_root.resolve()
+        # Serialize with web starts and with CLI runs / stage branching. A
+        # local process registry alone does not cover externally started runs.
+        with self._process_lock, (run_root / ".run.lock").open("a") as lock:
+            process = self._processes.get(run_root)
+            if process is not None and process.poll() is None:
+                raise RuntimeError("停止或暂停当前运行后才能修改参数")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeError("another process is using this run") from exc
+            previous = parameters.load(run_root)
+            values = parameters.validate({**previous, **incoming})
+            difference = sorted(key for key, value in values.items() if previous.get(key) != value)
+            if difference:
+                atomic_json_write(run_root / parameters.SETTINGS_RELATIVE, values)
+                self.events_for(run_root).emit(
+                    "parameters_updated", status="updated", changed=difference,
+                    previous={key: previous[key] for key in difference},
+                    values={key: values[key] for key in difference},
+                    affects_from=parameters.earliest_stage(difference))
+        result = self.run_parameters(run_root)
+        result["updated"] = difference
+        result["affects_from"] = parameters.earliest_stage(difference)
+        return result
 
     def _usage_from_traces(self, run_root: Path) -> dict[str, dict]:
         """Fall back to the ReAct traces for runs that predate usage events."""
@@ -1042,7 +1098,11 @@ class WebApplication:
             process = self._processes.get(run_root)
             if process is not None and process.poll() is None:
                 return {"status": "already_running"}
-            current_status = self.manifest(run_root).get("status")
+            manifest = self.manifest(run_root)
+            required = parameters.required_rerun(run_root, parameters.load(run_root), manifest.get("stage_results", {}))
+            if required:
+                raise RuntimeError(f"参数影响已有结果，请从 {required} 阶段创建重跑分支")
+            current_status = manifest.get("status")
             if current_status == "cancelled":
                 raise RuntimeError("this run was cancelled; create a stage rerun branch to continue")
             if current_status == "succeeded":
@@ -1059,6 +1119,10 @@ class WebApplication:
                                          conversation_id=conversation_id)
             command = [sys.executable, "-m", "drugstudio.cli", "run",
                        "--run-root", str(run_root), "--prompt", prompt]
+            # Pass the run's saved parameters explicitly: without them the
+            # subprocess would fall back to argparse defaults and silently
+            # resume on different science than the run was configured with.
+            command.extend(parameters.to_cli_args(parameters.load(run_root)))
             if model:
                 command.extend(["--model", str(model)])
             log_path = run_root / "logs" / f"web-run-{uuid.uuid4().hex}.log"
@@ -1203,6 +1267,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"projects": self.app.list_projects(project_root),
                             "selected": self.app.project_identity(project_root),
                             "workbench_projects": self.app.workbench_projects()})
+            elif parsed.path == "/api/parameters":
+                self._json(self.app.run_parameters(self._run_scope(query)))
             elif parsed.path == "/api/provenance":
                 self._json(self.app.provenance(
                     self._run_scope(query),
@@ -1297,6 +1363,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.app.select_run(self.app.run_key(self._run_scope(payload))))
             elif parsed.path == "/api/rerun":
                 self._json(self.app.rerun_from(str(payload.get("stage") or ""), self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
+            elif parsed.path == "/api/parameters":
+                self._json(self.app.save_run_parameters(payload, self._run_scope(payload)))
             elif parsed.path == "/api/pricing":
                 self._json(self.app.save_pricing(payload, self._run_scope(payload)))
             elif parsed.path == "/api/review":

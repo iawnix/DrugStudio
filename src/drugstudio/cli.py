@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+from . import parameters
 from .contracts import DockingPolicy, LigandSpec, RunState, RunStatus, TargetSpec
 from .events import EventWriter
 from .storage import ArtifactStore
@@ -125,7 +126,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.command == "review":
                 return _review_run(args, store)
             if args.command == "run":
-                return _execute_run(args, store)
+                return _execute_run(args, store, sys.argv[1:] if argv is None else argv)
         raise AssertionError(f"unhandled command: {args.command}")
     except Exception as exc:
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr)
@@ -258,19 +259,28 @@ def _evaluate_benchmark(args: argparse.Namespace, store: ArtifactStore) -> int:
     return 0
 
 
-def _execute_run(args: argparse.Namespace, store: ArtifactStore) -> int:
+def _explicit_flags(argv: List[str]) -> set:
+    """Parameter keys the caller actually named on the command line.
+
+    An explicit flag always wins over the saved value, even when it happens
+    to equal the default.
+    """
+    stated = set()
+    for token in argv or []:
+        if not token.startswith("--"):
+            continue
+        name = token[2:].split("=", 1)[0].replace("-", "_")
+        if name in parameters.BY_KEY:
+            stated.add(name)
+    return stated
+
+
+def _execute_run(args: argparse.Namespace, store: ArtifactStore, argv: List[str] | None = None) -> int:
     from .runtime import build_controller
 
     state = store.load_manifest()
     if state.status == RunStatus.CANCELLED:
         raise ValueError("this run was cancelled; create a stage rerun branch to continue from preserved results")
-    if state.status == RunStatus.PAUSED:
-        EventWriter(store.root, state.run_id).set_control_request(None)
-        state.status = RunStatus.RUNNING
-        store.save_manifest(state)
-    if state.status == RunStatus.SUCCEEDED:
-        print(json.dumps({"run_id": state.run_id, "status": "succeeded", "message": "already complete"}))
-        return 0
     if (args.center is None) != (args.size is None):
         raise ValueError("provide both --center and --size, or omit both to use P2Rank")
     if args.pocket_rank < 1:
@@ -280,6 +290,32 @@ def _execute_run(args: argparse.Namespace, store: ArtifactStore) -> int:
                                                     "keep_receptor_residue", "keep_receptor_water",
                                                     "add_missing_residues", "pocket_rank", "p2rank_executable",
                                                     "p2rank_profile", "p2rank_box_size")}
+    # A resumed run must continue on the parameters it was configured with.
+    # Anything the caller did not state explicitly comes from the run's own
+    # latest snapshot and saved edits rather than today's argparse defaults.
+    saved = parameters.load(store.root)
+    stated = _explicit_flags(argv)
+    for key, value in saved.items():
+        if key not in settings or key in stated:
+            continue
+        settings[key] = value
+    settings.update(parameters.validate({key: settings[key] for key in parameters.BY_KEY}))
+    # Manual boxes are execution settings, not editable UI parameters. Preserve
+    # them when resuming an older CLI run without an explicit new box.
+    previous = parameters.runtime_settings(store.root)
+    if args.center is None and args.size is None:
+        settings["center"] = previous.get("center")
+        settings["size"] = previous.get("size")
+    required = parameters.required_rerun(store.root, settings, state.stage_results)
+    if required:
+        raise ValueError(f"参数影响已有结果，请从 {required} 阶段创建重跑分支")
+    if state.status == RunStatus.PAUSED:
+        EventWriter(store.root, state.run_id).set_control_request(None)
+        state.status = RunStatus.RUNNING
+        store.save_manifest(state)
+    if state.status == RunStatus.SUCCEEDED:
+        print(json.dumps({"run_id": state.run_id, "status": "succeeded", "message": "already complete"}))
+        return 0
     controller = build_controller(store, state, settings=settings, approve_box=args.approve_box,
                                   approve_receptor=args.approve_receptor, model_name=args.model)
     result = controller.invoke(args.prompt)

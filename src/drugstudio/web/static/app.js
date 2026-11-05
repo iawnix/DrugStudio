@@ -3,7 +3,7 @@
   "use strict";
 
   const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: "", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
-    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null };
+    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null, parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -195,6 +195,7 @@
       }
       if (!app.projectId && app.state.project?.project_id) app.projectId = app.state.project.project_id;
       setConnection(true);
+      fetchParameters();
       renderAll();
       connectEvents();
       fetchRuns();
@@ -387,7 +388,183 @@
     if (window.lucide) window.lucide.createIcons();
   }
 
+  // ---- stage parameters --------------------------------------------------
+  // Until now "改参数" only raised a toast pointing at a panel that showed
+  // no parameters. The form is built from the schema the server serves, so
+  // adding a knob in parameters.py is enough to make it editable here.
+
+  function resetParameterContext() {
+    app.parameterRequestId += 1;
+    app.parameters = null; app.parameterEdits = {}; app.parameterSaving = false;
+    renderStageParameters();
+  }
+
+  async function fetchParameters() {
+    if (!app.runKey) { resetParameterContext(); return; }
+    if (app.parameterSaving) return;
+    const projectId = app.projectId, runKey = app.runKey;
+    const requestId = ++app.parameterRequestId;
+    const current = () => requestId === app.parameterRequestId && projectId === app.projectId && runKey === app.runKey;
+    try {
+      const response = await fetch(scoped("/api/parameters"), { cache: "no-store" });
+      const data = await response.json();
+      if (!current()) return;
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      if (data.run_key !== runKey) throw new Error("参数所属运行不匹配，请刷新后重试");
+      if (app.parameters?.run_key !== runKey) app.parameterEdits = {};
+      app.parameters = data;
+      renderStageParameters();
+    } catch (error) {
+      if (!current()) return;
+      app.parameters = null;
+      renderStageParameters();
+      const fields = $("stage-parameters-fields");
+      if (fields) fields.innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
+    }
+  }
+
+  function parameterValue(key) {
+    if (Object.prototype.hasOwnProperty.call(app.parameterEdits, key)) return app.parameterEdits[key];
+    return app.parameters?.values?.[key];
+  }
+
+  function parameterField(item) {
+    const value = parameterValue(item.key);
+    const id = `param-${item.key}`;
+    const disabled = app.parameters?.editable && !app.parameterSaving ? "" : "disabled";
+    const changed = JSON.stringify(app.parameters?.values?.[item.key]) !== JSON.stringify(item.default);
+    let control;
+    if (item.kind === "bool") {
+      control = `<input type="checkbox" id="${id}" data-parameter="${esc(item.key)}" ${value ? "checked" : ""} ${disabled}>`;
+    } else if (item.kind === "choice") {
+      control = `<select id="${id}" class="input-control" data-parameter="${esc(item.key)}" ${disabled}>${
+        item.choices.map((choice) => `<option value="${esc(choice)}" ${choice === value ? "selected" : ""}>${esc(choice)}</option>`).join("")}</select>`;
+    } else if (item.kind === "list") {
+      control = `<textarea id="${id}" class="input-control" rows="2" data-parameter="${esc(item.key)}" placeholder="每行一个" ${disabled}>${esc(Array.isArray(value) ? value.join("\n") : (value || ""))}</textarea>`;
+    } else if (item.kind === "text") {
+      control = `<input type="text" id="${id}" class="input-control" data-parameter="${esc(item.key)}" value="${esc(value ?? "")}" ${disabled}>`;
+    } else {
+      const step = item.kind === "float" ? "0.1" : "1";
+      const bounds = `${item.minimum != null ? ` min="${item.minimum}"` : ""}${item.maximum != null ? ` max="${item.maximum}"` : ""}`;
+      control = `<input type="number" id="${id}" class="input-control" step="${step}"${bounds} data-parameter="${esc(item.key)}" value="${esc(value ?? "")}" ${disabled}>`;
+    }
+    return `<div class="parameter-row ${item.kind === "bool" ? "parameter-row-bool" : ""}">
+      <label for="${id}">${esc(item.label)}${item.unit ? ` <small>${esc(item.unit)}</small>` : ""}${changed ? `<span class="parameter-changed" title="已偏离默认值">·</span>` : ""}</label>
+      ${control}
+      ${item.help ? `<p class="parameter-help">${esc(item.help)}</p>` : ""}
+    </div>`;
+  }
+
+  function renderStageParameters() {
+    const section = $("stage-parameters");
+    if (!section) return;
+    const fields = $("stage-parameters-fields");
+    const stage = app.selectedStage;
+    const data = app.parameters;
+    if (!data || data.run_key !== app.runKey) {
+      fields.innerHTML = `<div class="empty-state">${app.runKey ? "参数尚未载入。" : "本项目暂无运行。"}</div>`;
+      $("stage-parameters-actions").hidden = true;
+      $("stage-parameters-note").hidden = true;
+      $("stage-parameters-state").textContent = "";
+      return;
+    }
+    const items = data.parameters.filter((item) => item.stage === stage);
+    $("stage-parameters-state").textContent = data.editable ? "" : "运行中不可修改";
+    if (!items.length) {
+      // Honest about stages that genuinely expose nothing, rather than
+      // showing an empty box that looks broken.
+      fields.innerHTML = `<div class="empty-state">这个阶段没有可调参数。</div>`;
+      $("stage-parameters-actions").hidden = true;
+      $("stage-parameters-note").hidden = true;
+      return;
+    }
+    fields.innerHTML = items.map(parameterField).join("");
+    fields.querySelectorAll("[data-parameter]").forEach((node) => {
+      node.addEventListener("input", () => {
+        const key = node.dataset.parameter;
+        app.parameterEdits[key] = node.type === "checkbox" ? node.checked : node.value;
+        renderParameterNote();
+      });
+      if (node.tagName === "SELECT") node.addEventListener("change", () => {
+        app.parameterEdits[node.dataset.parameter] = node.value;
+        renderParameterNote();
+      });
+    });
+    $("stage-parameters-actions").hidden = !data.editable;
+    $("save-parameters").disabled = app.parameterSaving;
+    $("reset-parameters").disabled = app.parameterSaving;
+    renderParameterNote();
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function pendingParameterKeys() {
+    return Object.keys(app.parameterEdits).filter((key) => {
+      const current = app.parameters?.values?.[key];
+      const edited = app.parameterEdits[key];
+      if (typeof current === "boolean") return Boolean(edited) !== current;
+      if (Array.isArray(current)) return String(edited).trim() !== current.join("\n");
+      if (typeof current === "number") return Number(edited) !== current;
+      return String(edited ?? "") !== String(current ?? "");
+    });
+  }
+
+  function renderParameterNote() {
+    const note = $("stage-parameters-note");
+    const pending = pendingParameterKeys();
+    if (!pending.length) {
+      const required = app.parameters?.rerun_required;
+      const label = workflowNodes.find(([name]) => name === required)?.[1] || required;
+      note.hidden = !required;
+      note.textContent = required ? `已保存的参数需要从「${label}」重跑后生效。` : "";
+      return;
+    }
+    // Say what a change costs before it is saved: the stage it invalidates
+    // is the one the user will have to rerun from.
+    const stages = pending.map((key) => app.parameters.parameters.find((item) => item.key === key)?.stage);
+    const order = app.parameters.stage_order || [];
+    const earliest = stages.filter(Boolean).sort((a, b) => order.indexOf(a) - order.indexOf(b))[0];
+    const label = workflowNodes.find(([name]) => name === earliest)?.[1] || earliest;
+    note.hidden = false;
+    note.textContent = `保存后需要从「${label}」重跑才会生效。`;
+  }
+
+  async function saveParameters() {
+    if (!app.runKey || app.parameters?.run_key !== app.runKey || !app.parameters?.editable || app.parameterSaving) return;
+    const pending = pendingParameterKeys();
+    if (!pending.length) { toast("参数没有改动"); return; }
+    const projectId = app.projectId, runKey = app.runKey;
+    const requestId = ++app.parameterRequestId;
+    const current = () => requestId === app.parameterRequestId && projectId === app.projectId && runKey === app.runKey;
+    const values = {};
+    pending.forEach((key) => { values[key] = app.parameterEdits[key]; });
+    app.parameterSaving = true;
+    renderStageParameters();
+    try {
+      const response = await postJson("/api/parameters", { values, run_key: runKey, project_id: projectId });
+      const data = await response.json();
+      if (!current()) return;
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      if (data.run_key !== runKey) throw new Error("参数所属运行不匹配，请刷新后重试");
+      app.parameters = data;
+      app.parameterEdits = {};
+      const label = workflowNodes.find(([name]) => name === data.rerun_required)?.[1];
+      toast(label ? `参数已保存，从「${label}」重跑后生效` : "参数已保存，将用于下一次执行");
+    } catch (error) { if (current()) toast(error.message, true); }
+    finally {
+      if (current()) { app.parameterSaving = false; renderStageParameters(); }
+    }
+  }
+
+  function resetParameters() {
+    if (!app.parameters) return;
+    const stage = app.selectedStage;
+    app.parameters.parameters.filter((item) => item.stage === stage)
+      .forEach((item) => { app.parameterEdits[item.key] = item.default; });
+    renderStageParameters();
+  }
+
   function handleStageAction(action, stage) {
+    if (app.selectedStage !== stage) app.parameterEdits = {};
     app.selectedStage = stage;
     if (action === "logs") {
       const details = $("advanced-run-details");
@@ -397,7 +574,7 @@
     }
     if (action === "params") {
       inspectWorkflowStage(stage);
-      toast("节点参数和产物已显示在右侧详情。 ");
+      $("stage-parameters")?.scrollIntoView({ behavior: "instant", block: "nearest" });
       return;
     }
     if (action === "rerun") {
@@ -456,12 +633,15 @@
   function duration(start, end) { const seconds = Math.max(0, (new Date(end || Date.now()) - new Date(start)) / 1000); return seconds < 60 ? `${seconds.toFixed(1)}s` : `${Math.floor(seconds / 60)}m ${(seconds % 60).toFixed(0)}s`; }
 
   function inspectWorkflowStage(stage) {
+    const changed = app.selectedStage !== stage;
     app.selectedStage = stage;
+    if (changed) app.parameterEdits = {};
     const label = workflowNodes.find((item) => item[0] === stage)?.[1] || stage;
     const status = stageStatus(stage); const result = app.state.stage_results?.[stage] || {};
     $("workflow-node-title").textContent = label; $("workflow-node-status").textContent = stageStatusLabel(status);
     $("workflow-node-detail").innerHTML = `<div class="inspector-fact"><span>状态</span><strong>${esc(stageStatusLabel(status))}</strong></div><div class="inspector-fact"><span>产物</span><strong>${(app.state.artifacts?.[stage] || []).length}</strong></div><div class="inspector-fact"><span>进度</span><strong>${esc(stageProgress(stage, status) || "—")}</strong></div><div class="inspector-fact"><span>最近结果</span><strong>${esc(result.error || result.metadata?.profile || result.metadata?.selected_rank || "已记录在运行清单")}</strong></div>`;
     $("rerun-stage").disabled = !app.runKey || app.state.server?.workflow_running;
+    renderStageParameters();
   }
 
   function inspectGraphNode(node) {
@@ -1161,6 +1341,7 @@
   }
 
   function resetRunBox() {
+    resetParameterContext();
     app.selectedPocket = null; app.structureArtifact = null; app.boxDraftRun = null;
     BOX_AXES.forEach(axis => { $(`center-${axis}`).value = ""; $(`size-${axis}`).value = 24; });
     app.structureAtoms = []; renderBoxCoverage();
@@ -1540,6 +1721,8 @@
     $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
     $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview);
     $("review-stage").addEventListener("change", renderReviewStage);
+    $("save-parameters").addEventListener("click", saveParameters);
+    $("reset-parameters").addEventListener("click", resetParameters);
     $("toggle-box").addEventListener("click", () => setBoxVisible(!app.boxVisible));
     ["center", "size"].forEach((kind) => ["x", "y", "z"].forEach((axis) => {
       // Typing a coordinate moves the wireframe immediately, so the box is
@@ -1551,7 +1734,9 @@
     $("workflow-zoom-in").addEventListener("click", () => zoomWorkflowCanvas(.1));
     $("workflow-fit").addEventListener("click", fitWorkflowCanvas);
     $("conversation-workflow").addEventListener("toggle", () => {
-      if ($("conversation-workflow").open) window.setTimeout(() => { fitWorkflowCanvas(); renderWorkflow(); }, 40);
+      // The toggle event has already changed layout. Deferring this fit can
+      // recenter the canvas after the user has begun a drag.
+      if ($("conversation-workflow").open) { fitWorkflowCanvas(); renderWorkflow(); }
     });
     window.addEventListener("resize", () => { if ($("terminal-dock").classList.contains("open")) resizeTerminal(); });
     document.addEventListener("visibilitychange", () => {
@@ -1566,14 +1751,21 @@
     }, { passive: false });
     workflowCanvas.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
+      // Capture is taken only once a drag actually starts. Capturing on
+      // pointerdown retargets the following click to the canvas, which
+      // swallowed every click on a stage node and its action buttons.
       app.workflowCanvas.pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, startX: app.workflowCanvas.x, startY: app.workflowCanvas.y, moved: false };
-      workflowCanvas.setPointerCapture(event.pointerId);
     });
     workflowCanvas.addEventListener("pointermove", (event) => {
       const pointer = app.workflowCanvas.pointer;
       if (!pointer || pointer.id !== event.pointerId) return;
       const dx = event.clientX - pointer.x, dy = event.clientY - pointer.y;
-      if (Math.abs(dx) + Math.abs(dy) > 4) pointer.moved = app.workflowCanvas.moved = true;
+      if (Math.abs(dx) + Math.abs(dy) > 4 && !pointer.moved) {
+        pointer.moved = app.workflowCanvas.moved = true;
+        // Now that this is a drag, keep receiving moves even if the cursor
+        // leaves the canvas.
+        try { workflowCanvas.setPointerCapture(event.pointerId); } catch (_) { /* already gone */ }
+      }
       if (pointer.moved) {
         app.workflowCanvas.x = pointer.startX + dx;
         app.workflowCanvas.y = pointer.startY + dy;
@@ -1584,7 +1776,10 @@
       const pointer = app.workflowCanvas.pointer;
       if (!pointer || pointer.id !== event.pointerId) return;
       app.workflowCanvas.pointer = null;
-      if (pointer.moved) window.setTimeout(() => { app.workflowCanvas.moved = false; }, 0);
+      if (pointer.moved) {
+        try { workflowCanvas.releasePointerCapture(event.pointerId); } catch (_) { /* already released */ }
+        window.setTimeout(() => { app.workflowCanvas.moved = false; }, 0);
+      }
     };
     workflowCanvas.addEventListener("pointerup", endCanvasPan);
     workflowCanvas.addEventListener("pointercancel", endCanvasPan);

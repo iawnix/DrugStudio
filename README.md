@@ -88,6 +88,29 @@ relationship sidecars in `.workbench/` and each run's `run-meta.json`; the
 scientific manifest remains the source of truth. `GET /api/provenance` returns
 the upstream artifact chain for a selected result.
 
+### Run parameters
+
+The editable scientific parameters and validation rules live in
+`src/drugstudio/parameters.py`. The CLI and `/api/parameters` use those rules,
+and the browser builds its forms from the API schema.
+
+Saving an edit writes the run's `parameter-settings.json` sidecar, without
+changing historical artifacts. Execution records an immutable
+`inputs/runtime-<hash>.json` snapshot in the manifest. Legacy
+`inputs/runtime.json` snapshots remain readable and retain their checksums.
+A resumed run loads its latest snapshot and saved edits; explicitly supplied
+CLI flags take precedence. Partial API updates retain the other saved values.
+
+Changes affecting computed stages require a rerun branch from the earliest
+affected stage. For example, seed changes require rerunning **ligand preparation**
+and downstream stages, since the seed affects conformer generation as well as
+docking. The UI displays the required stage and startup rejects incompatible
+reuse of old outputs. Parameter saves are blocked during active web or CLI
+execution, and audit events record both old and new values.
+
+Box centre and size remain human review decisions through `overrides`. Existing
+manual CLI boxes are preserved when continuing without new box flags.
+
 The server keeps no current project or current run of its own. Every request
 names its own scope through `project_id` and `run_key`, so two browser tabs,
 or two people, can work on different runs at the same time without changing

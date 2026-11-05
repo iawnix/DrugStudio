@@ -48,7 +48,22 @@ jobs:
           DRUGSTUDIO_REQUIRE_UI_TESTS: '1'
           DRUGSTUDIO_TEST_3DMOL: .runtime/viewer/node_modules/3dmol/build/3Dmol-min.js
           DRUGSTUDIO_UI_SCREENSHOT: output/playwright/docking-box.png
-        run: python -m unittest discover -s tests -p "test_*ui.py" -v
+        run: |
+          python - <<'PYTEST'
+          import sys
+          import unittest
+          from pathlib import Path
+          log = Path("output/playwright/browser-tests.log")
+          log.parent.mkdir(parents=True, exist_ok=True)
+          with log.open("w") as stream:
+              suite = unittest.defaultTestLoader.discover("tests", pattern="test_*ui.py")
+              result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
+          print(log.read_text())
+          for test, detail in result.errors + result.failures:
+              detail = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title={test.id()}::{detail}")
+          sys.exit(0 if result.wasSuccessful() else 1)
+          PYTEST
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -17,6 +17,7 @@ from typing import Any
 from ..contracts import ArtifactRef
 from ..ports import ToolContext, ToolResult
 from ..storage import ArtifactStore
+from .tool_paths import external_executable
 
 
 class P2RankPocketFinder:
@@ -25,8 +26,10 @@ class P2RankPocketFinder:
                  java_home: str | Path | None = None,
                  fpocket_activate: str | Path | None = None):
         self.store = store
-        configured = executable or os.environ.get("DOCK_AGENT_P2RANK") or shutil.which("prank") or "prank"
-        self.executable = Path(configured).expanduser()
+        self.executable = (Path(executable).expanduser().resolve() if executable else
+                           external_executable(
+                               "DOCK_AGENT_P2RANK", ("prank",),
+                               ("p2rank/2.5.1/prank", "p2rank/bin/prank")))
         self.profile = profile
         self.box_size = float(box_size)
         self.timeout_seconds = timeout_seconds

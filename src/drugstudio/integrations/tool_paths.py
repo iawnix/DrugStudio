@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 
@@ -36,4 +37,26 @@ def external_runner(environment_variable: str, relative_path: str) -> Path:
     return candidates[0].resolve()
 
 
-__all__ = ["external_runner"]
+def external_executable(environment_variable: str, names: tuple[str, ...],
+                        relative_paths: tuple[str, ...] = ()) -> Path:
+    """Find an optional executable in PATH, a configured location, or a checkout."""
+    configured = os.environ.get(environment_variable, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return Path(found).resolve()
+    source = Path(__file__).resolve()
+    candidates = [parent / relative for parent in source.parents for relative in map(Path, relative_paths)]
+    candidates.extend(Path(path).expanduser() for path in (
+        "/home/agent/soft/p2rank/2.5.1/prank",
+        "/home/agent/soft/p2rank/bin/prank",
+    ))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
+    return candidates[0].resolve() if candidates else Path(names[0])
+
+
+__all__ = ["external_executable", "external_runner"]

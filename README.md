@@ -114,6 +114,12 @@ or two people, can work on different runs at the same time without changing
 each other's view. `GET /api/runs?project_id=...` lists only that project's
 runs.
 
+Projects without runs return an empty state. Their files, terminal and chats
+remain available; run actions are rejected until a run exists. A request naming
+both a project and a run must use a run owned by that project. Requests omitting
+project scope retain the legacy startup default; `project_id=.` is the
+workspace-wide view.
+
 The server answers only requests whose `Host` header matches the address it
 was bound to. Behind a reverse proxy, pass the public name explicitly:
 
@@ -138,10 +144,38 @@ directories, retaining the original inputs and outputs.
 
 ## Development
 
+The review panel supports docking-box decisions and receptor approval. The
+protein viewer can overlay the current box as a wireframe. Coverage counts
+residues with at least one atom inside the box and separately flags key residues
+that are outside, partly covered, or missing from the loaded coordinates.
+Both pocket predictions and user-specified residues are checked, including
+insertion codes. This is a geometric check of observed coordinates; missing
+atoms remain unassessed. Numeric coverage remains available without WebGL.
+
+Browser regressions run with Playwright and a local copy of the same 3Dmol 2.5.5
+build used by the workbench. They also exercise the no-renderer case. To run them:
+
 ```bash
+python -m pip install . playwright
+python -m playwright install chromium
+npm install --prefix .runtime/viewer --no-save 3dmol@2.5.5
+DRUGSTUDIO_REQUIRE_UI_TESTS=1 \
+DRUGSTUDIO_TEST_3DMOL=.runtime/viewer/node_modules/3dmol/build/3Dmol-min.js \
+  python -m unittest discover -s tests -p test_review_ui.py -v
+```
+
+```bash
+python -m unittest discover -s tests -v
 python -m compileall -q src/drugstudio
 node --check src/drugstudio/web/static/app.js
 ```
+
+The HTTP regressions use temporary workspaces and do not call models or launch
+scientific jobs. CI builds and installs a wheel, checks bundled assets, and runs
+the suite on Python 3.11 and 3.12. Tests requiring optional PDBFixer are explicitly
+skipped when it is unavailable; run the suite in the receptor environment to
+exercise those checks as well. `./run-agent.sh` also works directly from a source
+checkout without installing the package.
 
 The focused preparation regression checks are in `tests/`. Tests requiring
 PDBFixer/OpenMM or external chemistry executables need those optional tools

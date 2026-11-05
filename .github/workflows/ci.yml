@@ -1,0 +1,57 @@
+name: Regression checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  web-and-packaging:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: python -m pip install build
+      - run: python -m build
+      - run: python -m pip install dist/*.whl
+      - name: Installed CLI and web assets
+        working-directory: /tmp
+        run: |
+          drugstudio --help
+          python -m drugstudio.web.server --help
+          python -c "from drugstudio.web.server import STATIC_ROOT; assert (STATIC_ROOT / 'index.html').is_file(); assert (STATIC_ROOT / 'app.js').is_file()"
+          python -c "from pathlib import Path; import drugstudio; root = Path(drugstudio.__file__).parent; assert (root / 'scripts/run_receptor_env.sh').is_file(); assert (root / 'pbs/run_local_af3.pbs').is_file()"
+      - run: python -m unittest discover -s tests -v
+      - run: node --check src/drugstudio/web/static/app.js
+  review-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: python -m pip install . playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: npm install --prefix .runtime/viewer --no-save 3dmol@2.5.5
+      - name: Review UI with real 3Dmol and without a renderer
+        env:
+          DRUGSTUDIO_REQUIRE_UI_TESTS: '1'
+          DRUGSTUDIO_TEST_3DMOL: .runtime/viewer/node_modules/3dmol/build/3Dmol-min.js
+          DRUGSTUDIO_UI_SCREENSHOT: output/playwright/docking-box.png
+        run: python -m unittest discover -s tests -p test_review_ui.py -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docking-box-render
+          path: output/playwright/
+          if-no-files-found: ignore

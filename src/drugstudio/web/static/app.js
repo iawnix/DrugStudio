@@ -2,9 +2,8 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
-    boxVisible: false, boxShapes: [], structureAtoms: [],
-    parameters: null, parameterEdits: {} };
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: "", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
+    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null, parameters: null, parameterEdits: {}, parameterRequestId: 0 };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -63,11 +62,12 @@
     return true;
   }
 
-  function initializeWorkspace() {
+  async function initializeWorkspace() {
     initializeCodeEditor();
-    fetchState();
-    fetchProjects();
-    fetchModelConfig();
+    await fetchProjects();
+    await fetchRuns();
+    await fetchState();
+    await fetchModelConfig();
     renderChat();
   }
 
@@ -173,14 +173,26 @@
     app.ligandKey = null;
     app.boxShapes = [];
     app.structureAtoms = [];
+    app.structureText = null; app.structureCoordinateKey = null;
+    app.structureRequestId += 1;
   }
 
   async function fetchState() {
+    const projectId = app.projectId, runKey = app.runKey;
     try {
       const response = await fetch(scoped("/api/state"), { cache: "no-store" });
       if (!response.ok) throw new Error((await response.json()).error || response.statusText);
-      app.state = await response.json();
-      if (!app.runKey && app.state.run_key) app.runKey = app.state.run_key;
+      const state = await response.json();
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
+      app.state = state;
+      app.runKey = state.run_key || "";
+      if (!app.runKey) {
+        app.eventSource?.close(); app.eventSource = null; app.events = [];
+        app.selectedStage = null; app.selectedPocket = null; app.structureArtifact = null;
+        app.provenance = null; disposeViewers();
+        $("result-provenance")?.setAttribute("hidden", "");
+        $("workflow-node-detail").textContent = "本项目暂无运行";
+      }
       if (!app.projectId && app.state.project?.project_id) app.projectId = app.state.project.project_id;
       setConnection(true);
       fetchParameters();
@@ -188,6 +200,7 @@
       connectEvents();
       fetchRuns();
     } catch (error) {
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
       setConnection(false);
       toast(error.message || "Unable to load run data", true);
     }
@@ -213,7 +226,12 @@
     }
     $("workflow-pause").disabled = !state.server?.workflow_running;
     $("workflow-cancel").disabled = !state.server?.workflow_running;
-    $("workflow-continue").disabled = state.server?.workflow_running || ["cancelled", "succeeded"].includes(state.status);
+    const cannotContinue = !app.runKey || state.server?.workflow_running || ["cancelled", "succeeded"].includes(state.status);
+    $("workflow-continue").disabled = cannotContinue;
+    $("continue-button").disabled = cannotContinue;
+    $("submit-review").disabled = !app.runKey;
+    $("save-pricing").disabled = !app.runKey;
+    $("rerun-stage").disabled = !app.runKey || !app.selectedStage || state.server?.workflow_running;
     const runPill = $("run-state-pill");
     runPill.textContent = ({ succeeded: "已完成", failed: "失败", running: "运行中", paused: "已暂停", cancelled: "已取消", waiting_approval: "等待审核", waiting_input: "等待输入", waiting_execution: "等待执行" })[state.status] || (state.run_id ? state.status || "待运行" : "无运行");
     runPill.className = `run-state-pill ${state.status || "idle"}`;
@@ -226,11 +244,17 @@
     renderStructureChoices();
     renderPoseChoices();
     renderPockets();
+    if (app.boxDraftRun !== app.runKey) {
+      const saved = state.overrides?.docking_box;
+      if (saved?.center && saved?.size) fillBoxInputs(saved);
+      app.boxDraftRun = app.runKey;
+    }
     renderLigandChoices();
     renderResults();
     renderReview();
     if (window.lucide) window.lucide.createIcons();
     if (!app.proteinViewer && document.querySelector("#view-structure.active")) loadProtein();
+    if (document.querySelector("#view-review.active")) loadStructureCoordinates();
   }
 
   const workflowNodes = [
@@ -269,12 +293,15 @@
   }
 
   function connectEvents() {
-    if (app.eventSource) return;
-    app.eventSource = new EventSource(scoped("/api/events", { since: app.events.at(-1)?.event_id || 0 }));
-    app.eventSource.onopen = () => { $("event-live").classList.add("live-indicator"); };
-    app.eventSource.onmessage = (message) => receiveEvent(message.data);
-    ["run_started", "run_completed", "run_failed", "run_paused", "run_cancelled", "control_requested", "model_started", "model_finished", "tool_started", "tool_finished", "stage_started", "stage_completed", "stage_failed", "stage_progress", "waiting_approval", "artifact_published", "human_decision", "run_created", "run_branched", "pricing_updated"].forEach((type) => app.eventSource.addEventListener(type, (event) => receiveEvent(event.data)));
-    app.eventSource.onerror = () => {
+    if (app.eventSource || !app.runKey) return;
+    const source = new EventSource(scoped("/api/events", { since: app.events.at(-1)?.event_id || 0 }));
+    app.eventSource = source;
+    source.onopen = () => { if (app.eventSource === source) $("event-live").classList.add("live-indicator"); };
+    const onEvent = (event) => { if (app.eventSource === source) receiveEvent(event.data); };
+    source.onmessage = onEvent;
+    ["run_started", "run_completed", "run_failed", "run_paused", "run_cancelled", "control_requested", "model_started", "model_finished", "tool_started", "tool_finished", "stage_started", "stage_completed", "stage_failed", "stage_progress", "waiting_approval", "artifact_published", "human_decision", "run_created", "run_branched", "pricing_updated"].forEach((type) => source.addEventListener(type, onEvent));
+    source.onerror = () => {
+      if (app.eventSource !== source) return;
       $("event-live").classList.remove("live-indicator");
       app.eventSource.close(); app.eventSource = null;
       fetch("/api/auth", { cache: "no-store" }).then((response) => response.json()).then((auth) => {
@@ -573,7 +600,7 @@
     const status = stageStatus(stage); const result = app.state.stage_results?.[stage] || {};
     $("workflow-node-title").textContent = label; $("workflow-node-status").textContent = stageStatusLabel(status);
     $("workflow-node-detail").innerHTML = `<div class="inspector-fact"><span>状态</span><strong>${esc(stageStatusLabel(status))}</strong></div><div class="inspector-fact"><span>产物</span><strong>${(app.state.artifacts?.[stage] || []).length}</strong></div><div class="inspector-fact"><span>进度</span><strong>${esc(stageProgress(stage, status) || "—")}</strong></div><div class="inspector-fact"><span>最近结果</span><strong>${esc(result.error || result.metadata?.profile || result.metadata?.selected_rank || "已记录在运行清单")}</strong></div>`;
-    $("rerun-stage").disabled = app.state.server?.workflow_running;
+    $("rerun-stage").disabled = !app.runKey || app.state.server?.workflow_running;
     renderStageParameters();
   }
 
@@ -622,9 +649,11 @@
   }
 
   async function fetchRuns() {
+    const projectId = app.projectId, runKey = app.runKey;
     try {
       const response = await fetch(scoped("/api/runs"), { cache: "no-store" }); const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
+      if (projectId !== app.projectId || runKey !== app.runKey) return;
       const runs = data.runs || [];
       $("run-selector").innerHTML = runs.length ? runs.map((run) => {
         const title = `${run.run_key} · ${run.target_id || run.run_id} · ${run.status || "unknown"}`;
@@ -659,6 +688,7 @@
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       app.projectId = data.project_id;
       app.runKey = "";
+      resetRunBox();
       app.eventSource?.close(); app.eventSource = null; app.events = [];
       app.provenance = null; disposeViewers();
       app.fileDirectory = ""; app.filePath = ""; app.terminalCwd = "";
@@ -979,6 +1009,7 @@
       const response = await postJson("/api/select-run", { run_key: runKey });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       // Selection is client state now; the server only confirmed the key.
+      resetRunBox();
       app.runKey = data.selected || runKey;
       if (data.project_id) app.projectId = data.project_id;
       app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null;
@@ -1027,9 +1058,12 @@
 
   function renderStructureChoices() {
     const items = structureCandidates();
+    const previous = app.structureArtifact;
     const select = $("structure-select");
     select.innerHTML = items.length ? items.map((item, index) => `<option value="${index}">${esc(item.kind)} · ${esc(item.path.split("/").pop())}</option>`).join("") : `<option value="">No structure artifact</option>`;
-    app.structureArtifact = items[0] || null;
+    app.structureArtifact = items.find(item => item.path === app.structureArtifact?.path) || items[0] || null;
+    if (previous && (previous.path !== app.structureArtifact?.path || previous.sha256 !== app.structureArtifact?.sha256)) disposeViewers();
+    if (app.structureArtifact) select.value = String(items.indexOf(app.structureArtifact));
     $("structure-file").textContent = app.structureArtifact?.path || "—";
     const quality = app.state.stage_results?.structure?.metadata?.quality || app.state.stage_results?.receptor?.metadata?.structure_quality || app.state.stage_results?.pocket?.metadata?.structure_quality;
     if (quality) {
@@ -1089,7 +1123,7 @@
     if (app.selectedPocket) {
       const center = app.selectedPocket.box?.center || app.selectedPocket.center || [];
       const size = app.selectedPocket.box?.size || [];
-      ["x", "y", "z"].forEach((axis, index) => { $(`center-${axis}`).value = center[index] ?? ""; $(`size-${axis}`).value = size[index] ?? 24; });
+      fillBoxInputs({center, size});
       renderPocketDetail();
       if (app.proteinStyle === "site") setProteinStyle("site");
       else showPocket(app.selectedPocket);
@@ -1112,45 +1146,82 @@
     $("pocket-detail").innerHTML = `<div class="detail-item"><label>CENTER X / Y / Z</label><strong class="mono">${center.map((n) => fmt(n, 2)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>BOX Å</label><strong class="mono">${size.map((n) => fmt(n, 1)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>PROBABILITY</label><strong>${fmt(pocket.probability, 3)}</strong></div><div class="detail-item"><label>SURFACE POINTS</label><strong>${esc(pocket.surface_points ?? "—")}</strong></div><div class="residue-list">${(pocket.residue_ids || []).map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("") || `<span class="muted">No residue labels</span>`}</div>`;
   }
 
-  async function loadProtein() {
+  function structureCoordinateKey() {
+    return JSON.stringify([app.projectId, app.runKey, app.structureArtifact?.path, app.structureArtifact?.sha256]);
+  }
+
+  async function loadStructureCoordinates() {
     const artifact = app.structureArtifact;
-    if (!artifact) return;
-    $("structure-file").textContent = artifact.path;
-    // Fetch and parse coordinates before touching the renderer: box coverage
-    // is a numeric check and must survive a missing viewer.
-    let text;
+    if (!artifact) { app.structureAtoms = []; renderBoxCoverage(); return null; }
+    const key = structureCoordinateKey();
+    if (key === app.structureCoordinateKey) { renderBoxCoverage(); return app.structureText; }
+    const request = ++app.structureRequestId;
+    app.structureAtoms = []; renderBoxCoverage();
     try {
       const response = await fetch(fileUrl(artifact.path));
       if (!response.ok) throw new Error(`Structure request failed (${response.status})`);
-      text = await response.text();
+      const text = await response.text();
+      if (request !== app.structureRequestId || key !== structureCoordinateKey()) return null;
       app.structureAtoms = parseReceptorAtoms(text);
+      app.structureCoordinateKey = key; app.structureText = text;
       renderBoxCoverage();
+      return text;
     } catch (error) {
-      showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || "request failed"}`);
-      return;
+      if (request === app.structureRequestId && key === structureCoordinateKey()) {
+        app.structureAtoms = []; renderBoxCoverage();
+        showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || "request failed"}`);
+      }
+      return null;
     }
+  }
+
+  async function loadProtein() {
+    const key = structureCoordinateKey();
+    const text = await loadStructureCoordinates();
+    if (text === null || key !== structureCoordinateKey()) return;
+    $("structure-file").textContent = app.structureArtifact.path;
     if (!window.$3Dmol) { $("protein-viewer").innerHTML = `<div class="viewer-placeholder">3D viewer library unavailable</div>`; return; }
     if (!webglAvailable()) { showViewerMessage("protein-viewer", "WebGL is disabled in this browser. Enable hardware acceleration to view 3D structures."); return; }
     try {
+      app.proteinViewer?.clear?.();
       $("protein-viewer").innerHTML = "";
-      app.proteinViewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: "#0e1116", antialias: true });
-      app.proteinViewer.addModel(text, "pdb");
+      const viewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: "#0e1116", antialias: true });
+      app.proteinViewer = viewer; app.boxShapes = [];
+      viewer.addModel(text, "pdb");
       setProteinStyle("cartoon");
-      await addPoseOverlay();
-      app.proteinViewer.zoomTo(); app.proteinViewer.render();
-      if (app.selectedPocket) showPocket(app.selectedPocket);
-      app.boxShapes = [];
+      await addPoseOverlay(viewer);
+      if (app.proteinViewer !== viewer || key !== structureCoordinateKey()) return;
       onBoxInputChanged();
-    } catch (error) { showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || String(error) || "3D renderer failed"}`); }
+      fitProteinView();
+    } catch (error) {
+      if (key === structureCoordinateKey()) showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || "3D renderer failed"}`);
+    }
   }
 
-  async function addPoseOverlay() {
-    const index = Number($("pose-select")?.value);
-    const artifact = poseArtifacts()[index];
-    if (!artifact || !app.proteinViewer) return;
-    const text = await fetch(fileUrl(artifact.path)).then((response) => response.text());
-    app.proteinViewer.addModel(text, "sdf");
-    app.proteinViewer.setStyle({ model: 1 }, { stick: { radius: .2, colorscheme: "Jmol" }, sphere: { scale: .28, colorscheme: "Jmol" } });
+  function fitProteinView() {
+    if (!app.proteinViewer) return;
+    app.proteinViewer.zoomTo();
+    // 3Dmol fits the vertical field of view; narrow drawers also need a
+    // horizontal margin so the wireframe is not clipped at the sides.
+    const host = $("protein-viewer");
+    if (host.clientWidth > 0 && host.clientWidth < host.clientHeight) {
+      app.proteinViewer.zoom(host.clientWidth / host.clientHeight);
+    }
+    app.proteinViewer.render();
+  }
+
+  async function addPoseOverlay(viewer) {
+    const value = $("pose-select")?.value;
+    if (!value) return;
+    const artifact = poseArtifacts()[Number(value)];
+    if (!artifact || !viewer) return;
+    const text = await fetch(fileUrl(artifact.path)).then((response) => {
+      if (!response.ok) throw new Error("Unable to load docked pose");
+      return response.text();
+    });
+    if (app.proteinViewer !== viewer) return;
+    viewer.addModel(text, "sdf");
+    viewer.setStyle({ model: 1 }, { stick: { radius: .2, colorscheme: "Jmol" }, sphere: { scale: .28, colorscheme: "Jmol" } });
   }
 
   function siteResidueSelections() {
@@ -1173,7 +1244,7 @@
     }
     try {
       app.proteinViewer.removeAllSurfaces?.();
-      app.proteinViewer.removeAllShapes();
+      app.proteinViewer.removeAllShapes(); app.boxShapes = [];
       app.proteinViewer.setStyle(protein, {});
       if (style === "site") {
         app.proteinViewer.setStyle(protein, { cartoon: { color: "#b8c1c5", opacity: 0.22 } });
@@ -1201,6 +1272,7 @@
         if (app.selectedPocket) showPocket(app.selectedPocket);
       }
       app.proteinStyle = style;
+      drawDockingBox();
       app.proteinViewer.render();
       document.querySelectorAll("[data-protein-style]").forEach((button) => button.classList.toggle("active", button.dataset.proteinStyle === style));
     } catch (error) {
@@ -1220,8 +1292,22 @@
 
   const BOX_AXES = ["x", "y", "z"];
 
+  function fillBoxInputs(box) {
+    BOX_AXES.forEach((axis, index) => {
+      $(`center-${axis}`).value = box.center[index] ?? "";
+      $(`size-${axis}`).value = box.size[index] ?? 24;
+    });
+    onBoxInputChanged();
+  }
+
+  function resetRunBox() {
+    app.selectedPocket = null; app.structureArtifact = null; app.boxDraftRun = null;
+    BOX_AXES.forEach(axis => { $(`center-${axis}`).value = ""; $(`size-${axis}`).value = 24; });
+    app.structureAtoms = []; renderBoxCoverage();
+  }
+
   function boxFromInputs() {
-    const read = (id) => Number($(id).value);
+    const read = (id) => $(id).value.trim() === "" ? NaN : Number($(id).value);
     const center = BOX_AXES.map((axis) => read(`center-${axis}`));
     const size = BOX_AXES.map((axis) => read(`size-${axis}`));
     if (![...center, ...size].every(Number.isFinite)) return null;
@@ -1266,15 +1352,22 @@
   function parseReceptorAtoms(text) {
     const atoms = [];
     for (const line of text.split("\n")) {
-      if (!line.startsWith("ATOM") && !line.startsWith("HETATM")) continue;
-      const x = Number(line.slice(30, 38)), y = Number(line.slice(38, 46)), z = Number(line.slice(46, 54));
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-      const chain = line.slice(21, 22).trim() || "A";
-      const resi = Number(line.slice(22, 26));
-      if (!Number.isFinite(resi)) continue;
-      atoms.push({ x, y, z, key: `${chain}:${resi}` });
+      if (line.startsWith("ENDMDL")) break; // Same first model as the viewer.
+      if (!line.startsWith("ATOM  ") && !line.startsWith("HETATM")) continue;
+      const fields = [line.slice(30, 38), line.slice(38, 46), line.slice(46, 54), line.slice(22, 26)];
+      if (fields.some(value => !value.trim() || !Number.isFinite(Number(value)))) continue;
+      const [x, y, z, resi] = fields.map(Number);
+      atoms.push({ x, y, z, key: `${line.slice(21, 22).trim()}:${resi}${line.slice(26, 27).trim()}` });
     }
     return atoms;
+  }
+
+  function residueKey(label) {
+    const value = String(label).trim();
+    const match = value.match(/^([^:\s]*):(-?\d+)([A-Za-z]?)$/)
+      || value.match(/^([A-Za-z0-9]+)[_ ](-?\d+)([A-Za-z]?)$/)
+      || value.match(/^([A-Za-z])(-?\d+)([A-Za-z]?)$/);
+    return match ? `${match[1]}:${Number(match[2])}${match[3]}` : null;
   }
 
   function boxCoverage() {
@@ -1283,20 +1376,26 @@
     const atoms = app.structureAtoms || [];
     if (!atoms.length) return { unavailable: true };
     const { lo, hi } = boxCorners(box.center, box.size);
-    const inside = new Set();
+    const observed = new Map();
     atoms.forEach((atom) => {
-      if (atom.x >= lo.x && atom.x <= hi.x && atom.y >= lo.y && atom.y <= hi.y
-          && atom.z >= lo.z && atom.z <= hi.z) inside.add(atom.key);
+      const inside = atom.x >= lo.x && atom.x <= hi.x && atom.y >= lo.y && atom.y <= hi.y
+          && atom.z >= lo.z && atom.z <= hi.z;
+      const counts = observed.get(atom.key) || { inside: 0, outside: 0 };
+      counts[inside ? "inside" : "outside"] += 1;
+      observed.set(atom.key, counts);
     });
-    // Residues the predictor or the user called out, that the box misses.
-    const expected = (app.selectedPocket?.residue_ids?.length
-      ? app.selectedPocket.residue_ids
-      : app.state?.target?.binding_site_residues || []);
-    const missing = expected.filter((label) => {
-      const match = String(label).match(/^([A-Za-z0-9]+)[:_ ]?(-?\d+)/);
-      return match ? !inside.has(`${match[1]}:${Number(match[2])}`) : false;
+    const expected = new Map();
+    [...(app.selectedPocket?.residue_ids || []), ...(app.state?.target?.binding_site_residues || [])]
+      .forEach(label => expected.set(residueKey(label) ?? `unparsed:${label}`, label));
+    const missing = [], partial = [], unresolved = [];
+    expected.forEach((label, key) => {
+      const counts = observed.get(key);
+      if (!counts) unresolved.push(label);
+      else if (!counts.inside) missing.push(label);
+      else if (counts.outside) partial.push(label);
     });
-    return { residues: inside.size, expected: expected.length, missing };
+    return { residues: [...observed.values()].filter(counts => counts.inside).length,
+      expected: expected.size, missing, partial, unresolved };
   }
 
   function renderBoxCoverage() {
@@ -1304,7 +1403,7 @@
     const summary = boxCoverage();
     if (readout) {
       readout.hidden = !app.boxVisible || !summary || Boolean(summary.unavailable);
-      if (summary && !summary.unavailable) readout.textContent = `盒内残基 ${summary.residues}`;
+      if (summary && !summary.unavailable) readout.textContent = `与盒相交残基 ${summary.residues}`;
     }
     if (!coverage) return;
     if (!summary) {
@@ -1318,12 +1417,14 @@
     }
     // A key residue outside the box is a warning, not a block: the reviewer
     // may be deliberately targeting a sub-pocket.
-    const warning = summary.missing.length
-      ? `<div class="box-warning"><i data-lucide="triangle-alert"></i>${summary.missing.length} 个关键残基落在盒外：${summary.missing.slice(0, 6).map(esc).join(" · ")}${summary.missing.length > 6 ? " …" : ""}</div>`
-      : summary.expected
-        ? `<div class="box-ok"><i data-lucide="circle-check"></i>${summary.expected} 个关键残基全部在盒内</div>`
-        : "";
-    coverage.innerHTML = `<div class="box-stat"><span>盒内残基</span><strong>${summary.residues}</strong></div>${warning}`;
+    const warningList = (labels, description) => labels.length
+      ? `<div class="box-warning">${labels.length} ${description}：${labels.slice(0, 6).map(esc).join(" · ")}${labels.length > 6 ? " …" : ""}</div>` : "";
+    const warning = warningList(summary.missing, "个关键残基落在盒外")
+      + warningList(summary.partial, "个关键残基仅部分原子在盒内")
+      + warningList(summary.unresolved, "个关键残基未找到坐标或标签无法识别");
+    const complete = !warning && summary.expected
+      ? `<div class="box-ok">${summary.expected} 个关键残基的已载入原子全部在盒内</div>` : "";
+    coverage.innerHTML = `<div class="box-stat"><span>与盒相交残基</span><strong>${summary.residues}</strong></div><small class="muted">按当前结构中已载入的原子统计；相交表示至少一个原子在盒内。</small>${warning}${complete}`;
     if (window.lucide) window.lucide.createIcons();
   }
 
@@ -1340,6 +1441,7 @@
       button.setAttribute("aria-pressed", String(visible));
     }
     drawDockingBox();
+    if (visible) fitProteinView();
     renderBoxCoverage();
   }
 
@@ -1537,6 +1639,8 @@
       if (app.proteinViewer) window.setTimeout(() => app.proteinViewer.resize(), 40); else loadProtein();
     } else if (viewName === "ligand") {
       if (app.ligandViewer) window.setTimeout(() => app.ligandViewer.resize(), 40); else loadLigand(Number($("ligand-select").value || 0));
+    } else if (viewName === "review") {
+      loadStructureCoordinates();
     } else if (viewName === "files") {
       refreshProjectFiles();
     }
@@ -1555,7 +1659,7 @@
     }));
     $("open-terminal").addEventListener("click", openTerminalDock);
     $("close-terminal").addEventListener("click", closeTerminalDock);
-    $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.proteinViewer.zoomTo(); app.proteinViewer.render(); } });
+    $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.boxShapes = []; drawDockingBox(); fitProteinView(); } });
     $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt("New project-relative file name"); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
     $("chat-model").addEventListener("change", (event) => localStorage.setItem("dock-agent-chat-model", event.target.value.trim()));
     $("open-model-settings").addEventListener("click", () => {

@@ -294,8 +294,9 @@ class WebApplication:
         with self._session_lock:
             return any(hmac.compare_digest(session_id, known) for known in self._sessions)
 
-    def model_config(self, run_root: Path | None = None) -> dict:
-        run_model = _public_model_info(run_root or self.default_run_root) or {}
+    def model_config(self, run_root: Path | None = None, *, use_default: bool = True) -> dict:
+        root = run_root or (self.default_run_root if use_default else None)
+        run_model = (_public_model_info(root) or {}) if root is not None else {}
         with self._llm_config_lock:
             return {
                 "base_url": self._llm_config["base_url"] or run_model.get("base_url", ""),
@@ -639,7 +640,6 @@ class WebApplication:
         if not config["api_key"]:
             raise RuntimeError("AI chat needs an API key; configure it in model settings")
         project_root = project_root or self.default_project_root
-        run_root = run_root or self.default_run_root
         project_name = project_root.name
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -688,7 +688,7 @@ class WebApplication:
         tools = [StructuredTool.from_function(list_files), StructuredTool.from_function(read_file),
                  StructuredTool.from_function(write_file), StructuredTool.from_function(run_command)]
         tool_map = {tool.name: tool for tool in tools}
-        run_model = _public_model_info(run_root) or {}
+        run_model = (_public_model_info(run_root) or {}) if run_root is not None else {}
         requested_model = str(payload.get("model") or config["model"] or run_model.get("model") or "gpt-4.1-mini").strip()
         if len(requested_model) > 160:
             raise ValueError("model name is too long")
@@ -727,6 +727,22 @@ class WebApplication:
         if not path.is_file():
             raise FileNotFoundError(f"manifest.json not found under {root}")
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def empty_snapshot(self, project_root: Path) -> dict:
+        """Keep project tools available without borrowing another project's run."""
+        config = self.model_config(use_default=False)
+        return {
+            "project": self.project_identity(project_root),
+            "chat_available": config["api_key_configured"], "model_config": config,
+            "run_key": "", "run_id": None, "run_meta": None, "status": "idle",
+            "current_node": None, "target": {}, "ligands": [], "policy": {},
+            "stage_results": {}, "artifacts": {}, "tasks": [], "approvals": [],
+            "human_decisions": [], "overrides": {}, "decisions": [], "failures": [],
+            "report": None, "model": None,
+            "costs": {"models": {}, "pricing": {}, "total_calls": 0,
+                      "input_tokens": 0, "output_tokens": 0, "estimated_usd": None},
+            "control_request": None, "server": {"workflow_running": False},
+        }
 
     def snapshot(self, run_root: Path | None = None, project_root: Path | None = None) -> dict:
         run_root = run_root or self.default_run_root
@@ -825,7 +841,7 @@ class WebApplication:
         manifest = self.manifest(candidate)
         self.ensure_run_metadata(candidate, manifest)
         return {"selected": self.run_key(candidate), "run_id": manifest.get("run_id"),
-                "project_id": self.owning_project_id(candidate)}
+                "project_id": self.owning_project_id(candidate, self.run_metadata(candidate, manifest))}
 
     def request_control(self, action: str, run_root: Path | None = None) -> dict:
         run_root = run_root or self.default_run_root
@@ -904,6 +920,16 @@ class WebApplication:
             if normalized in invalidated:
                 state["stage_results"][key] = {"status": "stale", "previous_status": state["stage_results"][key].get("status"),
                                                 "rerun_from": stage}
+        # Approval of an old receptor/pocket does not approve newly generated
+        # chemistry or a newly ranked candidate. Keep the historical decision
+        # trail, but invalidate the approvals used for execution.
+        for approval in state.get("approvals", []):
+            if approval.get("stage") in invalidated or (
+                    approval.get("stage") == "docking_box" and "pocket" in invalidated):
+                approval["approved"] = False
+                approval["invalidated_by_rerun"] = branch.name
+        if "pocket" in invalidated:
+            state.get("overrides", {}).pop("docking_box", None)
         state["tasks"] = [] if selected <= order.index("docking") else state.get("tasks", [])
         state["status"] = "created"
         state["current_node"] = None
@@ -966,28 +992,37 @@ class WebApplication:
             "values": values,
             "changed": sorted(changed),
             "affects_from": parameters.earliest_stage(changed),
+            "rerun_required": parameters.required_rerun(run_root, values, self.manifest(run_root).get("stage_results", {})),
         }
 
     def save_run_parameters(self, payload: dict, run_root: Path) -> dict:
-        if self.workflow_running(run_root):
-            raise RuntimeError("停止或暂停当前运行后才能修改参数")
         incoming = payload.get("values")
         if not isinstance(incoming, dict):
             raise ValueError("values must be an object")
-        previous = parameters.load(run_root)
-        values = parameters.validate(incoming)
-        path = run_root / parameters.RUNTIME_RELATIVE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, values)
-        difference = sorted(key for key, value in values.items() if previous.get(key) != value)
-        if difference:
-            # The parameter change is part of the run's audit trail, not just
-            # a file edit, so it goes on the event timeline too.
-            self.events_for(run_root).emit(
-                "parameters_updated", status="updated", changed=difference,
-                affects_from=parameters.earliest_stage(difference))
+        run_root = run_root.resolve()
+        # Serialize with web starts and with CLI runs / stage branching. A
+        # local process registry alone does not cover externally started runs.
+        with self._process_lock, (run_root / ".run.lock").open("a") as lock:
+            process = self._processes.get(run_root)
+            if process is not None and process.poll() is None:
+                raise RuntimeError("停止或暂停当前运行后才能修改参数")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeError("another process is using this run") from exc
+            previous = parameters.load(run_root)
+            values = parameters.validate({**previous, **incoming})
+            difference = sorted(key for key, value in values.items() if previous.get(key) != value)
+            if difference:
+                atomic_json_write(run_root / parameters.SETTINGS_RELATIVE, values)
+                self.events_for(run_root).emit(
+                    "parameters_updated", status="updated", changed=difference,
+                    previous={key: previous[key] for key in difference},
+                    values={key: values[key] for key in difference},
+                    affects_from=parameters.earliest_stage(difference))
         result = self.run_parameters(run_root)
         result["updated"] = difference
+        result["affects_from"] = parameters.earliest_stage(difference)
         return result
 
     def _usage_from_traces(self, run_root: Path) -> dict[str, dict]:
@@ -1063,7 +1098,11 @@ class WebApplication:
             process = self._processes.get(run_root)
             if process is not None and process.poll() is None:
                 return {"status": "already_running"}
-            current_status = self.manifest(run_root).get("status")
+            manifest = self.manifest(run_root)
+            required = parameters.required_rerun(run_root, parameters.load(run_root), manifest.get("stage_results", {}))
+            if required:
+                raise RuntimeError(f"参数影响已有结果，请从 {required} 阶段创建重跑分支")
+            current_status = manifest.get("status")
             if current_status == "cancelled":
                 raise RuntimeError("this run was cancelled; create a stage rerun branch to continue")
             if current_status == "succeeded":
@@ -1168,16 +1207,32 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "unrecognized Host header"}, status=HTTPStatus.MISDIRECTED_REQUEST)
         return True
 
-    def _run_scope(self, source: dict) -> Path:
-        """Resolve the run this request addresses, falling back to the default.
-
-        Scope travels with the request so two browser tabs can sit on
-        different runs without overwriting one another.
-        """
+    def _run_scope(self, source: dict, *, required: bool = True) -> Path | None:
+        """Resolve a run within the supplied project, never across projects."""
         value = source.get("run_key", source.get("run_id", ""))
         if isinstance(value, list):
             value = value[0] if value else ""
-        return self.app.resolve_run(str(value or ""))
+        project_id = source.get("project_id", "")
+        if isinstance(project_id, list):
+            project_id = project_id[0] if project_id else ""
+        if project_id:
+            project_id = self.app.project_id_of(self.app.resolve_project(str(project_id)))
+        if value:
+            root = self.app.resolve_run(str(value))
+            if project_id and project_id != ".":
+                owner = self.app.owning_project_id(root, self.app.run_metadata(root))
+                if owner != project_id:
+                    raise ValueError("run belongs to another project")
+            return root
+        if not project_id or project_id == ".":
+            return self.app.default_run_root  # Legacy requests and workspace-wide view.
+        runs = self.app.list_runs(project_id)
+        if runs:
+            newest = max(runs, key=lambda item: (item.get("created_at") or "", item["run_key"]))
+            return self.app.resolve_run(newest["run_key"])
+        if required:
+            raise ValueError("this project has no run; create a run first")
+        return None
 
     def _project_scope(self, source: dict) -> Path:
         value = source.get("project_id", "")
@@ -1198,13 +1253,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             query = parse_qs(parsed.query)
             if parsed.path == "/api/state":
-                run_root = self._run_scope(query)
-                self._json(self.app.snapshot(run_root, self._project_scope(query)))
+                run_root = self._run_scope(query, required=False)
+                project_root = self._project_scope(query)
+                self._json(self.app.snapshot(run_root, project_root) if run_root is not None
+                           else self.app.empty_snapshot(project_root))
             elif parsed.path == "/api/model-config":
-                self._json(self.app.model_config(self._run_scope(query)))
+                self._json(self.app.model_config(self._run_scope(query, required=False), use_default=False))
             elif parsed.path == "/api/runs":
                 self._json({"runs": self.app.list_runs(query.get("project_id", [""])[0],
-                                                       self._run_scope(query))})
+                                                       self._run_scope(query, required=False))})
             elif parsed.path == "/api/projects":
                 project_root = self._project_scope(query)
                 self._json({"projects": self.app.list_projects(project_root),
@@ -1261,7 +1318,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/select-project":
                 self._json(self.app.select_project(str(payload.get("project_id") or "")))
             elif parsed.path == "/api/model-config":
-                self._json(self.app.update_model_config(payload))
+                run_root = self._run_scope(payload, required=False)
+                self.app.update_model_config(payload)
+                self._json(self.app.model_config(run_root, use_default=False))
             elif parsed.path == "/api/chats":
                 self._json(self.app.create_chat(str(payload.get("project_id") or "")), status=HTTPStatus.CREATED)
             elif parsed.path == "/api/chats/save":
@@ -1295,13 +1354,13 @@ class Handler(BaseHTTPRequestHandler):
                                                   project_root=self._project_scope(payload)))
             elif parsed.path == "/api/project/chat":
                 self._json(self.app.chat(payload, project_root=self._project_scope(payload),
-                                         run_root=self._run_scope(payload)))
+                                         run_root=self._run_scope(payload, required=False)))
             elif parsed.path == "/api/continue":
                 self._json(self.app.start_workflow(payload, self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/control":
                 self._json(self.app.request_control(str(payload.get("action") or ""), self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/select-run":
-                self._json(self.app.select_run(str(payload.get("run_key") or payload.get("run_id") or "")))
+                self._json(self.app.select_run(self.app.run_key(self._run_scope(payload))))
             elif parsed.path == "/api/rerun":
                 self._json(self.app.rerun_from(str(payload.get("stage") or ""), self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/parameters":

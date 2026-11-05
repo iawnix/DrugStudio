@@ -90,29 +90,38 @@ the upstream artifact chain for a selected result.
 
 ### Run parameters
 
-The tunable scientific parameters are declared once in
-`src/drugstudio/parameters.py`, which the CLI, the `/api/parameters`
-endpoints and the browser form all read. Values are stored per run in
-`inputs/runtime.json`, the same artifact recorded as
-`runtime_configuration`.
+The editable scientific parameters and validation rules live in
+`src/drugstudio/parameters.py`. The CLI and `/api/parameters` use those rules,
+and the browser builds its forms from the API schema.
 
-That file is the run's reproducibility record, so it wins over the argparse
-defaults: `drugstudio run` reads it and uses a default only where the file
-has no value and the flag was not given on the command line. An explicitly
-named flag always takes precedence. The workbench passes a run's saved
-values to the subprocess it starts, so resuming a run continues on the
-parameters it was configured with rather than on whatever the defaults are
-today.
+Saving an edit writes the run's `parameter-settings.json` sidecar, without
+changing historical artifacts. Execution records an immutable
+`inputs/runtime-<hash>.json` snapshot in the manifest. Legacy
+`inputs/runtime.json` snapshots remain readable and retain their checksums.
+A resumed run loads its latest snapshot and saved edits; explicitly supplied
+CLI flags take precedence. Partial API updates retain the other saved values.
 
-Box centre and size are deliberately not parameters. They are a human
-review decision, recorded through `overrides` by the review command and the
-review panel.
+Changes affecting computed stages require a rerun branch from the earliest
+affected stage. For example, seed changes require rerunning **ligand preparation**
+and downstream stages, since the seed affects conformer generation as well as
+docking. The UI displays the required stage and startup rejects incompatible
+reuse of old outputs. Parameter saves are blocked during active web or CLI
+execution, and audit events record both old and new values.
+
+Box centre and size remain human review decisions through `overrides`. Existing
+manual CLI boxes are preserved when continuing without new box flags.
 
 The server keeps no current project or current run of its own. Every request
 names its own scope through `project_id` and `run_key`, so two browser tabs,
 or two people, can work on different runs at the same time without changing
 each other's view. `GET /api/runs?project_id=...` lists only that project's
 runs.
+
+Projects without runs return an empty state. Their files, terminal and chats
+remain available; run actions are rejected until a run exists. A request naming
+both a project and a run must use a run owned by that project. Requests omitting
+project scope retain the legacy startup default; `project_id=.` is the
+workspace-wide view.
 
 The server answers only requests whose `Host` header matches the address it
 was bound to. Behind a reverse proxy, pass the public name explicitly:
@@ -138,10 +147,38 @@ directories, retaining the original inputs and outputs.
 
 ## Development
 
+The review panel supports docking-box decisions and receptor approval. The
+protein viewer can overlay the current box as a wireframe. Coverage counts
+residues with at least one atom inside the box and separately flags key residues
+that are outside, partly covered, or missing from the loaded coordinates.
+Both pocket predictions and user-specified residues are checked, including
+insertion codes. This is a geometric check of observed coordinates; missing
+atoms remain unassessed. Numeric coverage remains available without WebGL.
+
+Browser regressions run with Playwright and a local copy of the same 3Dmol 2.5.5
+build used by the workbench. They also exercise the no-renderer case. To run them:
+
 ```bash
+python -m pip install . playwright
+python -m playwright install chromium
+npm install --prefix .runtime/viewer --no-save 3dmol@2.5.5
+DRUGSTUDIO_REQUIRE_UI_TESTS=1 \
+DRUGSTUDIO_TEST_3DMOL=.runtime/viewer/node_modules/3dmol/build/3Dmol-min.js \
+  python -m unittest discover -s tests -p test_review_ui.py -v
+```
+
+```bash
+python -m unittest discover -s tests -v
 python -m compileall -q src/drugstudio
 node --check src/drugstudio/web/static/app.js
 ```
+
+The HTTP regressions use temporary workspaces and do not call models or launch
+scientific jobs. CI builds and installs a wheel, checks bundled assets, and runs
+the suite on Python 3.11 and 3.12. Tests requiring optional PDBFixer are explicitly
+skipped when it is unavailable; run the suite in the receptor environment to
+exercise those checks as well. `./run-agent.sh` also works directly from a source
+checkout without installing the package.
 
 The focused preparation regression checks are in `tests/`. Tests requiring
 PDBFixer/OpenMM or external chemistry executables need those optional tools

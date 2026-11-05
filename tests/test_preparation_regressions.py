@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import tempfile
 import unittest
 from dataclasses import replace
@@ -25,6 +26,7 @@ class PreparationRegressions(unittest.TestCase):
         residue.insertionCode='B'
         self.assertEqual(_label(residue),'A:99B')
 
+    @unittest.skipUnless(importlib.util.find_spec("pdbfixer"), "requires optional PDBFixer environment")
     def test_polymer_hetatm_survives_and_stale_connections_are_removed(self):
         with tempfile.TemporaryDirectory() as d:
             src, dst = Path(d)/'in.pdb', Path(d)/'out.pdb'
@@ -37,6 +39,7 @@ class PreparationRegressions(unittest.TestCase):
             self.assertNotIn('CONECT    4',dst.read_text())
             self.assertEqual(len(m['protected_polymer_heterogens']),1)
 
+    @unittest.skipUnless(importlib.util.find_spec("pdbfixer"), "requires optional PDBFixer environment")
     def test_keep_all_policy_is_respected(self):
         with tempfile.TemporaryDirectory() as d:
             src,dst=Path(d)/'in.pdb',Path(d)/'out.pdb'

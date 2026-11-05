@@ -24,3 +24,4 @@ include = ["drugstudio*"]
 
 [tool.setuptools.package-data]
 "drugstudio.web" = ["static/*"]
+"drugstudio" = ["scripts/*.sh", "pbs/*.pbs"]

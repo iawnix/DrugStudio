@@ -36,7 +36,13 @@ class P2RankPocketFinder:
         configured_fpocket = fpocket_activate or os.environ.get("DOCK_AGENT_FPOCKET_ACTIVATE")
         self.fpocket_activate = Path(configured_fpocket).expanduser() if configured_fpocket else None
         configured_java = java_home or os.environ.get("DOCK_AGENT_JAVA_HOME") or os.environ.get("JAVA_HOME")
-        self.java_home = Path(configured_java).expanduser() if configured_java else None
+        if configured_java:
+            self.java_home = Path(configured_java).expanduser()
+        else:
+            # P2Rank 2.5 requires Java 17+, while some cluster login shells
+            # still expose Java 8. Prefer the managed runtime when present.
+            managed_java = Path("/home/agent/soft/java/17.0.19")
+            self.java_home = managed_java if (managed_java / "bin/java").is_file() else None
         if not math.isfinite(self.box_size) or self.box_size <= 0:
             raise ValueError("P2Rank-derived box size must be positive")
 

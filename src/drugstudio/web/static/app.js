@@ -2,7 +2,8 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "" };
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
+    boxVisible: false, boxShapes: [], structureAtoms: [] };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -169,6 +170,8 @@
       if (host) host.innerHTML = "";
     });
     app.ligandKey = null;
+    app.boxShapes = [];
+    app.structureAtoms = [];
   }
 
   async function fetchState() {
@@ -949,6 +952,7 @@
       renderPocketDetail();
       if (app.proteinStyle === "site") setProteinStyle("site");
       else showPocket(app.selectedPocket);
+      onBoxInputChanged();
     }
     if (rerender) renderPockets();
   }
@@ -971,12 +975,22 @@
     const artifact = app.structureArtifact;
     if (!artifact) return;
     $("structure-file").textContent = artifact.path;
-    if (!window.$3Dmol) { $("protein-viewer").innerHTML = `<div class="viewer-placeholder">3D viewer library unavailable</div>`; return; }
-    if (!webglAvailable()) { showViewerMessage("protein-viewer", "WebGL is disabled in this browser. Enable hardware acceleration to view 3D structures."); return; }
+    // Fetch and parse coordinates before touching the renderer: box coverage
+    // is a numeric check and must survive a missing viewer.
+    let text;
     try {
       const response = await fetch(fileUrl(artifact.path));
       if (!response.ok) throw new Error(`Structure request failed (${response.status})`);
-      const text = await response.text();
+      text = await response.text();
+      app.structureAtoms = parseReceptorAtoms(text);
+      renderBoxCoverage();
+    } catch (error) {
+      showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || "request failed"}`);
+      return;
+    }
+    if (!window.$3Dmol) { $("protein-viewer").innerHTML = `<div class="viewer-placeholder">3D viewer library unavailable</div>`; return; }
+    if (!webglAvailable()) { showViewerMessage("protein-viewer", "WebGL is disabled in this browser. Enable hardware acceleration to view 3D structures."); return; }
+    try {
       $("protein-viewer").innerHTML = "";
       app.proteinViewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: "#0e1116", antialias: true });
       app.proteinViewer.addModel(text, "pdb");
@@ -984,6 +998,8 @@
       await addPoseOverlay();
       app.proteinViewer.zoomTo(); app.proteinViewer.render();
       if (app.selectedPocket) showPocket(app.selectedPocket);
+      app.boxShapes = [];
+      onBoxInputChanged();
     } catch (error) { showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || String(error) || "3D renderer failed"}`); }
   }
 
@@ -1057,6 +1073,135 @@
     }
   }
 
+  // ---- docking box -------------------------------------------------------
+  // The box is what docking actually searches, so it has to be visible next
+  // to the structure rather than guessed at from six number fields.
+
+  const BOX_AXES = ["x", "y", "z"];
+
+  function boxFromInputs() {
+    const read = (id) => Number($(id).value);
+    const center = BOX_AXES.map((axis) => read(`center-${axis}`));
+    const size = BOX_AXES.map((axis) => read(`size-${axis}`));
+    if (![...center, ...size].every(Number.isFinite)) return null;
+    if (size.some((value) => value <= 0)) return null;
+    return { center, size };
+  }
+
+  function boxCorners(center, size) {
+    const [cx, cy, cz] = center, [sx, sy, sz] = size;
+    const lo = { x: cx - sx / 2, y: cy - sy / 2, z: cz - sz / 2 };
+    const hi = { x: cx + sx / 2, y: cy + sy / 2, z: cz + sz / 2 };
+    return { lo, hi };
+  }
+
+  function drawDockingBox() {
+    if (!app.proteinViewer) return;
+    app.boxShapes.forEach((shape) => { try { app.proteinViewer.removeShape(shape); } catch (_) { /* gone */ } });
+    app.boxShapes = [];
+    if (!app.boxVisible) { app.proteinViewer.render(); return; }
+    const box = boxFromInputs();
+    if (!box) { app.proteinViewer.render(); return; }
+    const { lo, hi } = boxCorners(box.center, box.size);
+    const at = (ix, iy, iz) => ({ x: ix ? hi.x : lo.x, y: iy ? hi.y : lo.y, z: iz ? hi.z : lo.z });
+    // Twelve edges of the cuboid, drawn as lines so the receptor stays visible
+    // through it.
+    const edges = [];
+    [0, 1].forEach((a) => [0, 1].forEach((b) => {
+      edges.push([at(0, a, b), at(1, a, b)]);
+      edges.push([at(a, 0, b), at(a, 1, b)]);
+      edges.push([at(a, b, 0), at(a, b, 1)]);
+    }));
+    edges.forEach(([start, end]) => {
+      app.boxShapes.push(app.proteinViewer.addLine({ start, end, color: "#4d8df6", linewidth: 2 }));
+    });
+    app.proteinViewer.render();
+  }
+
+  // Coordinates are parsed from the PDB text we already fetch, not read back
+  // out of 3Dmol. Coverage is a property of the structure and the numbers, so
+  // it must still work when the viewer is unavailable -- no WebGL, or the CDN
+  // unreachable on an air-gapped cluster node.
+  function parseReceptorAtoms(text) {
+    const atoms = [];
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("ATOM") && !line.startsWith("HETATM")) continue;
+      const x = Number(line.slice(30, 38)), y = Number(line.slice(38, 46)), z = Number(line.slice(46, 54));
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      const chain = line.slice(21, 22).trim() || "A";
+      const resi = Number(line.slice(22, 26));
+      if (!Number.isFinite(resi)) continue;
+      atoms.push({ x, y, z, key: `${chain}:${resi}` });
+    }
+    return atoms;
+  }
+
+  function boxCoverage() {
+    const box = boxFromInputs();
+    if (!box) return null;
+    const atoms = app.structureAtoms || [];
+    if (!atoms.length) return { unavailable: true };
+    const { lo, hi } = boxCorners(box.center, box.size);
+    const inside = new Set();
+    atoms.forEach((atom) => {
+      if (atom.x >= lo.x && atom.x <= hi.x && atom.y >= lo.y && atom.y <= hi.y
+          && atom.z >= lo.z && atom.z <= hi.z) inside.add(atom.key);
+    });
+    // Residues the predictor or the user called out, that the box misses.
+    const expected = (app.selectedPocket?.residue_ids?.length
+      ? app.selectedPocket.residue_ids
+      : app.state?.target?.binding_site_residues || []);
+    const missing = expected.filter((label) => {
+      const match = String(label).match(/^([A-Za-z0-9]+)[:_ ]?(-?\d+)/);
+      return match ? !inside.has(`${match[1]}:${Number(match[2])}`) : false;
+    });
+    return { residues: inside.size, expected: expected.length, missing };
+  }
+
+  function renderBoxCoverage() {
+    const readout = $("box-readout"), coverage = $("box-coverage");
+    const summary = boxCoverage();
+    if (readout) {
+      readout.hidden = !app.boxVisible || !summary || Boolean(summary.unavailable);
+      if (summary && !summary.unavailable) readout.textContent = `盒内残基 ${summary.residues}`;
+    }
+    if (!coverage) return;
+    if (!summary) {
+      coverage.innerHTML = `<span class="muted">填写盒中心和正的盒尺寸后显示覆盖情况。</span>`;
+      return;
+    }
+    if (summary.unavailable) {
+      // The numbers are fine; we just have no coordinates to measure against.
+      coverage.innerHTML = `<span class="muted">尚未载入结构坐标，暂时无法统计盒内残基。</span>`;
+      return;
+    }
+    // A key residue outside the box is a warning, not a block: the reviewer
+    // may be deliberately targeting a sub-pocket.
+    const warning = summary.missing.length
+      ? `<div class="box-warning"><i data-lucide="triangle-alert"></i>${summary.missing.length} 个关键残基落在盒外：${summary.missing.slice(0, 6).map(esc).join(" · ")}${summary.missing.length > 6 ? " …" : ""}</div>`
+      : summary.expected
+        ? `<div class="box-ok"><i data-lucide="circle-check"></i>${summary.expected} 个关键残基全部在盒内</div>`
+        : "";
+    coverage.innerHTML = `<div class="box-stat"><span>盒内残基</span><strong>${summary.residues}</strong></div>${warning}`;
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function onBoxInputChanged() {
+    drawDockingBox();
+    renderBoxCoverage();
+  }
+
+  function setBoxVisible(visible) {
+    app.boxVisible = visible;
+    const button = $("toggle-box");
+    if (button) {
+      button.classList.toggle("active", visible);
+      button.setAttribute("aria-pressed", String(visible));
+    }
+    drawDockingBox();
+    renderBoxCoverage();
+  }
+
   function showPocket(pocket) {
     if (!app.proteinViewer || !pocket) return;
     app.proteinViewer.removeAllShapes();
@@ -1069,6 +1214,10 @@
       const match = String(value).match(/^([A-Za-z0-9])[: ]?(\d+)/); return match ? { chain: match[1], resi: Number(match[2]) } : null;
     }).filter(Boolean);
     selections.forEach((selection) => app.proteinViewer.setStyle(selection, { stick: { radius: .18, colorscheme: "Jmol" }, cartoon: { color: "#f2b562" } }));
+    // removeAllShapes above dropped the box; put it back so toggling styles
+    // does not silently lose it.
+    app.boxShapes = [];
+    drawDockingBox();
     app.proteinViewer.render();
   }
 
@@ -1183,13 +1332,51 @@
     $("decision-history").innerHTML = history.length ? history.slice().reverse().map((item) => `<div class="decision-row"><span class="decision-time">${esc(item.timestamp || "—")}</span><span class="decision-actor">${esc(item.actor || "审核人")} · ${esc(item.action || "决策")}</span><span class="decision-reason">${esc(item.reason || "—")}</span></div>`).join("") : `<div class="empty-state">暂无人工决策记录。</div>`;
   }
 
+  // The receptor stage records an approval only; the CLI rejects any other
+  // action for it, so the form offers what the backend will actually accept
+  // rather than letting the reviewer discover it from an error.
+  const reviewActions = {
+    docking_box: [["approve", "接受当前选择"], ["select", "选择口袋排名"],
+                  ["override", "修改对接盒"], ["reject", "否决当前盒子"]],
+    receptor: [["approve", "接受受体准备结果"]]
+  };
+
+  function renderReviewStage() {
+    const stage = $("review-stage").value;
+    const actions = reviewActions[stage] || reviewActions.docking_box;
+    const previous = $("review-action").value;
+    $("review-action").innerHTML = actions
+      .map(([value, label]) => `<option value="${value}">${esc(label)}</option>`).join("");
+    if (actions.some(([value]) => value === previous)) $("review-action").value = previous;
+    const boxStage = stage === "docking_box";
+    $("box-inputs").hidden = !boxStage;
+    $("box-coverage").hidden = !boxStage;
+    const note = $("review-stage-note");
+    note.hidden = boxStage;
+    note.textContent = boxStage ? "" : "受体审核目前只记录「接受」。要否决修复结果，请从受体阶段重跑并调整参数。";
+    if (boxStage) renderBoxCoverage();
+  }
+
   async function submitReview() {
+    const stage = $("review-stage").value;
     const action = $("review-action").value;
-    const payload = { stage: "docking_box", action, actor: $("review-actor").value, reason: $("review-reason").value };
-    if (action === "select" || action === "approve") payload.pocket_rank = app.selectedPocket?.rank;
-    if (action === "override") payload.center = ["x", "y", "z"].map((axis) => Number($(`center-${axis}`).value));
-    if (action === "override") payload.size = ["x", "y", "z"].map((axis) => Number($(`size-${axis}`).value));
-    try { const response = await postJson("/api/review", payload); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast("Human decision recorded"); await fetchState(); } catch (error) { toast(error.message, true); }
+    const payload = { stage, action, actor: $("review-actor").value, reason: $("review-reason").value };
+    if (stage === "docking_box") {
+      if (action === "select" || action === "approve") payload.pocket_rank = app.selectedPocket?.rank;
+      if (action === "override") {
+        const box = boxFromInputs();
+        if (!box) { toast("请填写有效的盒中心和正的盒尺寸。", true); return; }
+        payload.center = box.center;
+        payload.size = box.size;
+      }
+    }
+    try {
+      const response = await postJson("/api/review", payload);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      toast("人工决策已记录");
+      await fetchState();
+    } catch (error) { toast(error.message, true); }
   }
 
   async function continueWorkflow() {
@@ -1246,7 +1433,15 @@
     document.querySelectorAll("[data-protein-style]").forEach((button) => button.addEventListener("click", () => setProteinStyle(button.dataset.proteinStyle)));
     $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
     $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
-    $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview); $("continue-button").addEventListener("click", continueWorkflow);
+    $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview);
+    $("review-stage").addEventListener("change", renderReviewStage);
+    $("toggle-box").addEventListener("click", () => setBoxVisible(!app.boxVisible));
+    ["center", "size"].forEach((kind) => ["x", "y", "z"].forEach((axis) => {
+      // Typing a coordinate moves the wireframe immediately, so the box is
+      // judged by looking at it rather than by reading six numbers.
+      $(`${kind}-${axis}`).addEventListener("input", onBoxInputChanged);
+    }));
+    renderReviewStage(); $("continue-button").addEventListener("click", continueWorkflow);
     $("workflow-zoom-out").addEventListener("click", () => zoomWorkflowCanvas(-.1));
     $("workflow-zoom-in").addEventListener("click", () => zoomWorkflowCanvas(.1));
     $("workflow-fit").addEventListener("click", fitWorkflowCanvas);

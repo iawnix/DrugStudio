@@ -88,6 +88,26 @@ relationship sidecars in `.workbench/` and each run's `run-meta.json`; the
 scientific manifest remains the source of truth. `GET /api/provenance` returns
 the upstream artifact chain for a selected result.
 
+### Run parameters
+
+The tunable scientific parameters are declared once in
+`src/drugstudio/parameters.py`, which the CLI, the `/api/parameters`
+endpoints and the browser form all read. Values are stored per run in
+`inputs/runtime.json`, the same artifact recorded as
+`runtime_configuration`.
+
+That file is the run's reproducibility record, so it wins over the argparse
+defaults: `drugstudio run` reads it and uses a default only where the file
+has no value and the flag was not given on the command line. An explicitly
+named flag always takes precedence. The workbench passes a run's saved
+values to the subprocess it starts, so resuming a run continues on the
+parameters it was configured with rather than on whatever the defaults are
+today.
+
+Box centre and size are deliberately not parameters. They are a human
+review decision, recorded through `overrides` by the review command and the
+review panel.
+
 The server keeps no current project or current run of its own. Every request
 names its own scope through `project_id` and `run_key`, so two browser tabs,
 or two people, can work on different runs at the same time without changing

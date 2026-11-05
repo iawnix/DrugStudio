@@ -836,3 +836,20 @@ html, body { background: var(--bg); color: var(--ink); }
    set display: grid/flex, which silently defeated [hidden] and left them on
    screen; patching it per element had already been needed twice. */
 [hidden] { display: none !important; }
+
+/* Stage parameters: an editable form inside the node inspector. */
+.stage-parameters { border-top: 1px solid var(--line); padding: 15px 17px 4px; }
+.stage-parameters-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 11px; }
+.stage-parameters-state { color: var(--amber); font: 10px var(--mono); }
+.stage-parameters-fields { display: grid; gap: 13px; }
+.parameter-row label { display: block; color: var(--muted); font: 10px var(--mono); margin-bottom: 5px; }
+.parameter-row label small { color: var(--dim); }
+.parameter-row-bool { display: flex; align-items: center; gap: 9px; }
+.parameter-row-bool label { margin: 0; order: 2; }
+.parameter-row-bool input { order: 1; width: 15px; height: 15px; accent-color: var(--blue); }
+.parameter-row-bool .parameter-help { order: 3; flex-basis: 100%; }
+.parameter-changed { color: var(--amber); font-size: 15px; line-height: 0; margin-left: 4px; }
+.parameter-help { color: var(--dim); font-size: 10px; line-height: 1.5; margin: 5px 0 0; }
+.stage-parameters-actions { display: flex; gap: 8px; margin-top: 15px; }
+.stage-parameters-actions .primary-button, .stage-parameters-actions .secondary-button { flex: 1; justify-content: center; }
+.stage-parameters-note { color: var(--amber); font-size: 11px; line-height: 1.5; margin: 11px 0 0; }

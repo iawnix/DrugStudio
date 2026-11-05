@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .. import parameters
 from ..events import EventWriter
 from ..workbench import (
     atomic_json_write,
@@ -953,6 +954,42 @@ class WebApplication:
         self.events_for(run_root).emit("pricing_updated", model=model, **rates)
         return self.cost_summary(run_root)
 
+    def run_parameters(self, run_root: Path) -> dict:
+        """The parameter schema plus this run's current values."""
+        values = parameters.load(run_root)
+        changed = parameters.changed_from_default(values)
+        return {
+            "run_key": self.run_key(run_root),
+            "editable": not self.workflow_running(run_root),
+            "parameters": [item.as_json() for item in parameters.PARAMETERS],
+            "stage_order": list(parameters.STAGE_ORDER),
+            "values": values,
+            "changed": sorted(changed),
+            "affects_from": parameters.earliest_stage(changed),
+        }
+
+    def save_run_parameters(self, payload: dict, run_root: Path) -> dict:
+        if self.workflow_running(run_root):
+            raise RuntimeError("停止或暂停当前运行后才能修改参数")
+        incoming = payload.get("values")
+        if not isinstance(incoming, dict):
+            raise ValueError("values must be an object")
+        previous = parameters.load(run_root)
+        values = parameters.validate(incoming)
+        path = run_root / parameters.RUNTIME_RELATIVE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, values)
+        difference = sorted(key for key, value in values.items() if previous.get(key) != value)
+        if difference:
+            # The parameter change is part of the run's audit trail, not just
+            # a file edit, so it goes on the event timeline too.
+            self.events_for(run_root).emit(
+                "parameters_updated", status="updated", changed=difference,
+                affects_from=parameters.earliest_stage(difference))
+        result = self.run_parameters(run_root)
+        result["updated"] = difference
+        return result
+
     def _usage_from_traces(self, run_root: Path) -> dict[str, dict]:
         """Fall back to the ReAct traces for runs that predate usage events."""
         model_default = (_public_model_info(run_root) or {}).get("model", "unknown")
@@ -1043,6 +1080,10 @@ class WebApplication:
                                          conversation_id=conversation_id)
             command = [sys.executable, "-m", "drugstudio.cli", "run",
                        "--run-root", str(run_root), "--prompt", prompt]
+            # Pass the run's saved parameters explicitly: without them the
+            # subprocess would fall back to argparse defaults and silently
+            # resume on different science than the run was configured with.
+            command.extend(parameters.to_cli_args(parameters.load(run_root)))
             if model:
                 command.extend(["--model", str(model)])
             log_path = run_root / "logs" / f"web-run-{uuid.uuid4().hex}.log"
@@ -1169,6 +1210,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"projects": self.app.list_projects(project_root),
                             "selected": self.app.project_identity(project_root),
                             "workbench_projects": self.app.workbench_projects()})
+            elif parsed.path == "/api/parameters":
+                self._json(self.app.run_parameters(self._run_scope(query)))
             elif parsed.path == "/api/provenance":
                 self._json(self.app.provenance(
                     self._run_scope(query),
@@ -1261,6 +1304,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.app.select_run(str(payload.get("run_key") or payload.get("run_id") or "")))
             elif parsed.path == "/api/rerun":
                 self._json(self.app.rerun_from(str(payload.get("stage") or ""), self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
+            elif parsed.path == "/api/parameters":
+                self._json(self.app.save_run_parameters(payload, self._run_scope(payload)))
             elif parsed.path == "/api/pricing":
                 self._json(self.app.save_pricing(payload, self._run_scope(payload)))
             elif parsed.path == "/api/review":

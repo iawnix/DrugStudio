@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
 
 from drugstudio.web.server import Handler, WebApplication, _allowed_hosts
+from drugstudio.workbench import atomic_json_write
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
@@ -155,7 +156,7 @@ class BrowserHarness(unittest.TestCase):
         return json.loads((self.run_root / "manifest.json").read_text())
 
     def write_manifest(self, manifest):
-        (self.run_root / "manifest.json").write_text(json.dumps(manifest))
+        atomic_json_write(self.run_root / "manifest.json", manifest)
         self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_function("document.querySelector('#run-selector').value === 'proj/runs/r1'")
 

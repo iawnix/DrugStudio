@@ -574,7 +574,7 @@
     }
     if (action === "params") {
       inspectWorkflowStage(stage);
-      $("stage-parameters")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      $("stage-parameters")?.scrollIntoView({ behavior: "instant", block: "nearest" });
       return;
     }
     if (action === "rerun") {
@@ -1734,7 +1734,9 @@
     $("workflow-zoom-in").addEventListener("click", () => zoomWorkflowCanvas(.1));
     $("workflow-fit").addEventListener("click", fitWorkflowCanvas);
     $("conversation-workflow").addEventListener("toggle", () => {
-      if ($("conversation-workflow").open) window.setTimeout(() => { fitWorkflowCanvas(); renderWorkflow(); }, 40);
+      // The toggle event has already changed layout. Deferring this fit can
+      // recenter the canvas after the user has begun a drag.
+      if ($("conversation-workflow").open) { fitWorkflowCanvas(); renderWorkflow(); }
     });
     window.addEventListener("resize", () => { if ($("terminal-dock").classList.contains("open")) resizeTerminal(); });
     document.addEventListener("visibilitychange", () => {

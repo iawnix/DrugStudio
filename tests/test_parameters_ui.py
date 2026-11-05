@@ -92,7 +92,9 @@ class StageParametersPanel(harness.BrowserHarness):
     def test_dragging_the_canvas_still_pans_and_does_not_select(self):
         self.open_stage('structure')
         title = self.page.inner_text('#workflow-node-title')
-        start = self.page.locator('[data-workflow-stage="docking"]').bounding_box()
+        node = self.page.locator('[data-workflow-stage="docking"]')
+        node.hover()  # Wait for stable, visible coordinates before raw mouse events.
+        start = node.bounding_box()
         before = self.page.eval_on_selector('#workflow-world', 'el => el.style.transform')
         self.page.mouse.move(start['x'] + start['width'] / 2, start['y'] + start['height'] / 2)
         self.page.mouse.down()

@@ -13,12 +13,17 @@ from typing import Any, Dict, Iterable, List, Optional
 from ..contracts import ArtifactRef, DockingTask, LigandSpec, TargetSpec
 from ..ports import DockingEngine, LigandPreparer, ReceptorPreparer, ToolContext, ToolResult
 from ..storage import ArtifactStore
+from .tool_paths import external_runner
+
+
+VINA_RUNNER = external_runner(
+    "DOCK_AGENT_VINA_RUNNER", "skill-development/autodock-vina/scripts/run_in_env.sh")
 
 
 @dataclass
 class AutoDockVinaLigandPreparer:
     store: ArtifactStore
-    runner: Path = Path(__file__).resolve().parents[2] / "skill-development/autodock-vina/scripts/run_in_env.sh"
+    runner: Path = VINA_RUNNER
     timeout_seconds: int = 900
 
     def __post_init__(self) -> None:
@@ -63,7 +68,7 @@ class AutoDockVinaLigandPreparer:
 @dataclass
 class AutoDockVinaReceptorPreparer:
     store: ArtifactStore
-    runner: Path = Path(__file__).resolve().parents[2] / "skill-development/autodock-vina/scripts/run_in_env.sh"
+    runner: Path = VINA_RUNNER
     timeout_seconds: int = 900
 
     def __post_init__(self) -> None:
@@ -111,7 +116,7 @@ class AutoDockVinaEngine:
     store: ArtifactStore
     center: Optional[tuple[float, float, float]] = None
     size: Optional[tuple[float, float, float]] = None
-    runner: Path = Path(__file__).resolve().parents[2] / "skill-development/autodock-vina/scripts/run_in_env.sh"
+    runner: Path = VINA_RUNNER
     workers: int = 1
     allocated_cpus: int = 1
     exhaustiveness: int = 8

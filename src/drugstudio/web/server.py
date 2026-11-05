@@ -49,15 +49,20 @@ STATIC_ROOT = Path(__file__).with_name("static")
 
 
 class WebApplication:
-    def __init__(self, run_root: Path, workspace: Path, runs_root: Path | None = None,
+    def __init__(self, run_root: Path | None, workspace: Path, runs_root: Path | None = None,
                  workspace_root: Path | None = None, web_token: str | None = None):
         # These two are *defaults* for requests that name no scope.  They are
         # never reassigned: every request resolves its own project and run from
         # its own parameters, so two tabs (or two people) cannot clobber each
         # other's selection.
-        self.default_run_root = run_root.resolve()
         self.workspace = workspace.resolve()
-        self.runs_root = (runs_root or run_root.parent).resolve()
+        if run_root is None and runs_root is None:
+            raise ValueError("provide a run root or runs root")
+        self.runs_root = (Path(runs_root) if runs_root is not None else Path(run_root).parent).resolve()
+        # An empty runs root is a valid starting point for the workbench. It
+        # has no manifest-backed default run yet, but projects, files, chats
+        # and model settings can still be used before the first run is made.
+        self.default_run_root = (Path(run_root) if run_root is not None else self.runs_root).resolve()
         self.workspace_root = (workspace_root or self.workspace).resolve()
         self.default_run_root.relative_to(self.runs_root)
         self.web_token = web_token
@@ -81,8 +86,10 @@ class WebApplication:
         self.workbench_root = self.runs_root / ".workbench"
         self.projects_index = self.workbench_root / "projects.json"
         self.default_project_root = self._initial_project_root()
-        raw_manifest = self.manifest(self.default_run_root)
-        self.ensure_run_metadata(self.default_run_root, raw_manifest)
+        manifest_path = self.default_run_root / "manifest.json"
+        if manifest_path.is_file():
+            raw_manifest = self.manifest(self.default_run_root)
+            self.ensure_run_metadata(self.default_run_root, raw_manifest)
         # One startup pass also materializes sidecars for older sibling runs.
         with self._metadata_lock:
             self._refresh_project_index_locked()
@@ -1417,7 +1424,12 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("run belongs to another project")
             return root
         if not project_id or project_id == ".":
-            return self.app.default_run_root  # Legacy requests and workspace-wide view.
+            default = self.app.default_run_root  # Legacy requests and workspace-wide view.
+            if (default / "manifest.json").is_file():
+                return default
+            if required:
+                raise ValueError("this project has no run; create a run first")
+            return None
         runs = self.app.list_runs(project_id)
         if runs:
             newest = max(runs, key=lambda item: (item.get("created_at") or "", item["run_key"]))
@@ -1747,9 +1759,8 @@ def main(argv: list[str] | None = None) -> int:
     run_root = Path(args.run_root).expanduser().resolve() if args.run_root else None
     if runs_root:
         candidates = list(runs_root.rglob("manifest.json"))
-        if not candidates:
-            raise FileNotFoundError(f"no run manifest found under {runs_root}")
-        run_root = max(candidates, key=lambda item: item.stat().st_mtime_ns).parent
+        run_root = (max(candidates, key=lambda item: item.stat().st_mtime_ns).parent
+                    if candidates else runs_root)
     else:
         runs_root = run_root.parent
     # The workbench no longer lives inside the user's workspace, so derive the
@@ -1767,7 +1778,8 @@ def main(argv: list[str] | None = None) -> int:
         web_token = secrets.token_urlsafe(32)
     app = WebApplication(run_root, workspace, runs_root, workspace_root, web_token)
     app.allowed_hosts = _allowed_hosts(args.host, args.port, args.allowed_host)
-    app.manifest()
+    if (run_root / "manifest.json").is_file():
+        app.manifest()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.app = app  # type: ignore[attr-defined]
     print(f"DrugStudio workbench: http://{args.host}:{args.port}/", flush=True)

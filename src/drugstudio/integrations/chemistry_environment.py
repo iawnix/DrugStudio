@@ -2,8 +2,11 @@
 
 from pathlib import Path
 
+from .tool_paths import external_runner
 
-CHEMISTRY_RUNNER = Path(__file__).resolve().parents[2] / ".agents/skills/rdkit/scripts/run_in_env.sh"
+
+CHEMISTRY_RUNNER = external_runner(
+    "DOCK_AGENT_CHEMISTRY_RUNNER", ".agents/skills/rdkit/scripts/run_in_env.sh")
 
 
 def chemistry_command(script: Path, arguments: list[str], cwd: Path,

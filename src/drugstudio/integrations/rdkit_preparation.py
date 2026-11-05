@@ -11,12 +11,17 @@ from ..ports import ToolContext, ToolResult
 from ..storage import ArtifactStore
 from .autodock_vina import _run
 from .chemistry_environment import chemistry_command
+from .tool_paths import external_runner
+
+
+RDKIT_RUNNER = external_runner(
+    "DOCK_AGENT_CHEMISTRY_RUNNER", ".agents/skills/rdkit/scripts/run_in_env.sh")
 
 
 @dataclass
 class RDKitConformerPreparer:
     store: ArtifactStore
-    runner: Path = Path(__file__).resolve().parents[2] / ".agents/skills/rdkit/scripts/run_in_env.sh"
+    runner: Path = RDKIT_RUNNER
     seed: int = 20261016
 
     def prepare(self, ligand: LigandSpec, context: ToolContext) -> ToolResult:

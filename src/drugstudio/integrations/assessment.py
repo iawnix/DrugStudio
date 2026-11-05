@@ -15,6 +15,11 @@ from ..ports import ToolContext, ToolResult
 from ..storage import ArtifactStore
 from .autodock_vina import _run
 from .chemistry_environment import chemistry_command
+from .tool_paths import external_runner
+
+
+RDKIT_RUNNER = external_runner(
+    "DOCK_AGENT_CHEMISTRY_RUNNER", ".agents/skills/rdkit/scripts/run_in_env.sh")
 
 
 LIMITATIONS = [
@@ -31,7 +36,7 @@ LIMITATIONS = [
 @dataclass
 class VinaDruglikenessAssessor:
     store: ArtifactStore
-    chemistry_runner: Path = Path(__file__).resolve().parents[2] / ".agents/skills/rdkit/scripts/run_in_env.sh"
+    chemistry_runner: Path = RDKIT_RUNNER
     timeout_seconds: int = 600
 
     def assess(self, artifacts: Iterable[ArtifactRef], context: ToolContext) -> ToolResult:

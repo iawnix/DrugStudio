@@ -44,7 +44,9 @@ python -m pip install -e '.[openai,chemistry]'
 
 RDKit, PDBFixer/OpenMM, Meeko, AutoDock Vina, xTB, P2Rank and fpocket are
 separate scientific tools. Install only the tools required by your workflow
-and configure their executable paths. The package does not distribute
+and configure their executable and wrapper paths. Source checkouts search
+parent workspace skill directories automatically; installed wheels should set
+`DOCK_AGENT_VINA_RUNNER` and `DOCK_AGENT_CHEMISTRY_RUNNER`. The package does not distribute
 proprietary software, model weights, or external databases. See
 [receptor environment setup](environments/receptor/README.md) for the optional
 PDBFixer environment.
@@ -55,6 +57,8 @@ Configure the model in the environment or in the workbench settings:
 export OPENAI_API_KEY="..."
 export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional compatible endpoint
 export DOCK_AGENT_MODEL="gpt-4.1-mini"              # optional
+export DOCK_AGENT_VINA_RUNNER="/path/to/autodock-vina/scripts/run_in_env.sh"
+export DOCK_AGENT_CHEMISTRY_RUNNER="/path/to/rdkit/scripts/run_in_env.sh"
 ```
 
 The key is not written to manifests. Never commit credentials or local model
@@ -87,6 +91,9 @@ The workbench can select projects and runs independently. It stores small
 relationship sidecars in `.workbench/` and each run's `run-meta.json`; the
 scientific manifest remains the source of truth. `GET /api/provenance` returns
 the upstream artifact chain for a selected result.
+
+The server can also start with an empty `--runs-root`; create projects and
+conversations first, then initialize the first run with `drugstudio init`.
 
 ### Run parameters
 

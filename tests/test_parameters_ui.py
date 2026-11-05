@@ -139,8 +139,11 @@ class StageParametersPanel(harness.BrowserHarness):
         self.assertEqual(self.page.evaluate("document.activeElement.dataset.workflowStage"), "docking")
 
     def test_nothing_selected_says_so_rather_than_claiming_no_parameters(self):
-        # Reload without selecting a node; the parameter panel must distinguish
-        # this from a stage that simply has no tunable parameters.
+        # Remove the fixture's waiting pocket so no automatic follow selects a
+        # stage; the panel must distinguish this from a stage with no knobs.
+        manifest = self.manifest()
+        manifest.update({"status": "created", "current_node": None, "stage_results": {}})
+        self.write_manifest(manifest)
         self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_timeout(900)
         self.open_workflow()

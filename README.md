@@ -124,6 +124,26 @@ directories, retaining the original inputs and outputs.
 
 ## Development
 
+The review panel supports docking-box decisions and receptor approval. The
+protein viewer can overlay the current box as a wireframe. Coverage counts
+residues with at least one atom inside the box and separately flags key residues
+that are outside, partly covered, or missing from the loaded coordinates.
+Both pocket predictions and user-specified residues are checked, including
+insertion codes. This is a geometric check of observed coordinates; missing
+atoms remain unassessed. Numeric coverage remains available without WebGL.
+
+Browser regressions run with Playwright and a local copy of the same 3Dmol 2.5.5
+build used by the workbench. They also exercise the no-renderer case. To run them:
+
+```bash
+python -m pip install . playwright
+python -m playwright install chromium
+npm install --prefix .runtime/viewer --no-save 3dmol@2.5.5
+DRUGSTUDIO_REQUIRE_UI_TESTS=1 \
+DRUGSTUDIO_TEST_3DMOL=.runtime/viewer/node_modules/3dmol/build/3Dmol-min.js \
+  python -m unittest discover -s tests -p test_review_ui.py -v
+```
+
 ```bash
 python -m unittest discover -s tests -v
 python -m compileall -q src/drugstudio

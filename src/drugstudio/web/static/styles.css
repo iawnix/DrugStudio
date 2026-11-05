@@ -817,3 +817,22 @@ html, body { background: var(--bg); color: var(--ink); }
 .provenance-item small { overflow: hidden; color: var(--muted); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .provenance-state { margin-left: auto; color: var(--teal); font: 9px var(--mono); white-space: nowrap; }.provenance-state.missing { color: var(--amber); }
 .provenance-stages { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 13px 11px; color: var(--muted); font: 9px var(--mono); }.provenance-stages span { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; }
+
+/* Docking box review: the wireframe's companion readouts. */
+.box-readout { color: var(--blue); font: 10px var(--mono); }
+.box-coverage { margin-top: 14px; display: grid; gap: 8px; }
+.box-coverage:empty { display: none; }
+.box-stat { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 4px; }
+.box-stat span { color: var(--muted); font: 10px var(--mono); }
+.box-stat strong { font: 14px var(--mono); color: var(--ink); }
+.box-warning, .box-ok { display: flex; gap: 7px; align-items: flex-start; font-size: 11px; line-height: 1.5; padding: 9px 11px; border-radius: 4px; }
+.box-warning { color: var(--amber); background: rgba(242, 181, 98, .1); border: 1px solid rgba(242, 181, 98, .3); }
+.box-ok { color: var(--teal); background: rgba(69, 209, 176, .08); border: 1px solid rgba(69, 209, 176, .25); }
+.box-warning svg, .box-ok svg { width: 13px; height: 13px; flex: 0 0 auto; margin-top: 2px; }
+.review-stage-note { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 10px 0 0; }
+#toggle-box[aria-pressed="true"] { color: var(--blue); border-color: rgba(77, 141, 246, .45); background: rgba(77, 141, 246, .12); }
+
+/* The hidden attribute must win over a layout display value. Several panels
+   set display: grid/flex, which silently defeated [hidden] and left them on
+   screen; patching it per element had already been needed twice. */
+[hidden] { display: none !important; }

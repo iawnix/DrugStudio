@@ -50,8 +50,9 @@ class WorkbenchServerTestCase(unittest.TestCase):
 
         cls.app = WebApplication(cls.root / "alpha" / "runs" / "run-a", cls.root,
                                  cls.root, cls.root, web_token=None)
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.PORT = cls.httpd.server_port
         cls.app.allowed_hosts = _allowed_hosts("127.0.0.1", cls.PORT, [])
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", cls.PORT), Handler)
         cls.httpd.app = cls.app
         cls.base = f"http://127.0.0.1:{cls.PORT}"
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -236,6 +237,7 @@ class TerminalSessionsBelongToOneProject(WorkbenchServerTestCase):
         status, started = self.post("/api/project/terminal/start", {"project_id": "beta"})
         self.assertEqual(status, 200)
         session = started["session_id"]
+        process = self.app._terminals[session]["process"]
         try:
             stolen, _ = self.post("/api/project/terminal/input",
                                   {"project_id": "alpha", "session_id": session, "input": "id\n"})
@@ -245,6 +247,7 @@ class TerminalSessionsBelongToOneProject(WorkbenchServerTestCase):
             self.assertEqual(owned, 200)
         finally:
             self.post("/api/project/terminal/stop", {"project_id": "beta", "session_id": session})
+            process.wait(timeout=5)
 
 
 # The base class only provides the fixture; it holds no tests of its own.

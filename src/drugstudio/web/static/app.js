@@ -3,7 +3,7 @@
   "use strict";
 
   const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: "", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
-    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null, parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false };
+    boxVisible: false, boxShapes: [], structureAtoms: [], structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null, parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false, workflowBuilt: false, stagePickedByUser: false };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -21,6 +21,22 @@
     lua: ["lua", "lua", "Lua"], pl: ["perl", "perl", "Perl"], dockerfile: ["dockerfile", "dockerfile", "Dockerfile"],
     toml: ["toml", "toml", "TOML"], ini: ["properties", "text/x-properties", "INI"], conf: ["properties", "text/x-properties", "Config"]
   };
+  // Every user-facing string goes through t(). Source strings are Chinese,
+  // matching the primary audience, and MESSAGES holds the tables for other
+  // locales; t() passes a string through when no translation exists. The
+  // seam matters more than the table: before this, half the interface was
+  // Chinese and half was whatever the original author typed in English,
+  // with no single place to see or change it.
+  const MESSAGES = {
+    en: {
+      "开始": "Start", "完成": "Done", "查看日志": "View logs", "查看参数": "Parameters",
+      "从此处重跑": "Rerun from here", "接管节点": "Take over", "等待事件": "Waiting for events",
+      "模型已连接": "Model connected", "模型未连接": "Model not connected",
+    },
+  };
+  const LOCALE = (document.documentElement.lang || "zh-CN").slice(0, 2);
+  const t = (text) => MESSAGES[LOCALE]?.[text] ?? text;
+
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
   const fmt = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
@@ -52,7 +68,7 @@
         }
       }
       initializeWorkspace();
-    } catch (error) { toast(error.message || "Unable to connect to workbench", true); }
+    } catch (error) { toast(error.message || t("无法连接到工作台"), true); }
   }
 
   async function authenticate(token) {
@@ -99,7 +115,7 @@
   async function setEditorMode(path) {
     if (!app.codeEditor) return;
     const ext = path.toLowerCase().split("/").pop().split(".").pop();
-    const [mode, mime, label] = editorModes[ext] || ["", "null", "Plain text"];
+    const [mode, mime, label] = editorModes[ext] || ["", "null", t("纯文本")];
     $("editor-language").textContent = label;
     if (!mode) {
       app.codeEditor.setOption("mode", "null");
@@ -202,13 +218,13 @@
     } catch (error) {
       if (projectId !== app.projectId || runKey !== app.runKey) return;
       setConnection(false);
-      toast(error.message || "Unable to load run data", true);
+      toast(error.message || t("无法载入运行数据"), true);
     }
   }
 
   function setConnection(online) {
     $("connection-dot").classList.toggle("offline", !online);
-    $("connection-label").textContent = online ? "Live" : "Offline";
+    $("connection-label").textContent = online ? t("已连接") : t("已断开");
   }
 
   function artifactsByKind(kind) {
@@ -352,29 +368,108 @@
     };
   }
 
+  const ATTENTION_STATUSES = ["running", "waiting_approval", "waiting_input", "waiting_execution", "failed"];
+
+  function statusClassFor(status) {
+    if (status === "succeeded" || status === "completed") return "success";
+    if (status === "failed") return "failed";
+    if (status.includes("waiting")) return "waiting";
+    if (status === "running") return "running";
+    return "pending";
+  }
+
+  // Build the graph once. Rebuilding innerHTML on every event -- twice a
+  // second during a run -- dropped keyboard focus, restarted the status
+  // animations and rebound every listener. Updates now patch text and
+  // classes in place, so a node the user is interacting with stays put.
+  function buildWorkflowGraph() {
+    const world = $("workflow-world");
+    const action = (name, iconName, title, stage) =>
+      `<button type="button" class="stage-action" data-stage-action="${name}" data-stage="${stage}" title="${esc(title)}" aria-label="${esc(title)}"><i data-lucide="${iconName}"></i></button>`;
+    const cards = workflowNodes.map(([stage, label, icon], index) => `${
+      index ? `<div class="workflow-arrow" data-arrow-after="${esc(workflowNodes[index - 1][0])}"><i data-lucide="arrow-right"></i></div>` : ""
+    }<article class="workflow-stage-node pending" data-workflow-stage="${esc(stage)}" tabindex="0" role="button" aria-pressed="false"><div class="workflow-node-icon"><i data-lucide="${icon}"></i></div><strong>${esc(label)}</strong><span data-stage-status></span><em data-stage-progress hidden></em><div class="workflow-stage-actions">${
+      action("logs", "scroll-text", t("查看日志"), stage)
+    }${action("params", "sliders-horizontal", t("查看参数"), stage)
+    }${action("rerun", "rotate-ccw", t("从此处重跑"), stage)
+    }${action("takeover", "hand", t("接管节点"), stage)}</div></article>`).join("");
+    world.innerHTML = `<div class="workflow-entry">${t("开始")}</div>${cards}<div class="workflow-entry workflow-end">${t("完成")}</div>`;
+
+    // One delegated listener per interaction, bound once for the life of the
+    // page rather than re-attached on every repaint.
+    world.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-stage-action]");
+      if (button) {
+        event.stopPropagation();
+        handleStageAction(button.dataset.stageAction, button.dataset.stage);
+        return;
+      }
+      const node = event.target.closest("[data-workflow-stage]");
+      if (node && !app.workflowCanvas.moved) selectWorkflowStage(node.dataset.workflowStage);
+    });
+    world.addEventListener("keydown", (event) => {
+      const node = event.target.closest("[data-workflow-stage]");
+      if (!node || (event.key !== "Enter" && event.key !== " ")) return;
+      event.preventDefault();
+      selectWorkflowStage(node.dataset.workflowStage);
+    });
+    app.workflowBuilt = true;
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  // A click is a deliberate choice; the automatic follow must not override it.
+  function selectWorkflowStage(stage) {
+    app.stagePickedByUser = true;
+    inspectWorkflowStage(stage);
+    updateWorkflowNodes();
+  }
+
+  function updateWorkflowNodes() {
+    const world = $("workflow-world");
+    if (!world || !app.workflowBuilt) return;
+    workflowNodes.forEach(([stage]) => {
+      const node = world.querySelector(`[data-workflow-stage="${stage}"]`);
+      if (!node) return;
+      const status = stageStatus(stage);
+      const className = statusClassFor(status);
+      // Only touch the DOM when the value actually changed, so a running
+      // node's animation is not restarted by every unrelated event.
+      if (!node.classList.contains(className)) {
+        node.classList.remove("pending", "running", "success", "failed", "waiting");
+        node.classList.add(className);
+      }
+      const selected = app.selectedStage === stage;
+      node.classList.toggle("selected", selected);
+      node.setAttribute("aria-pressed", String(selected));
+      const label = node.querySelector("[data-stage-status]");
+      const text = stageStatusLabel(status);
+      if (label && label.textContent !== text) label.textContent = text;
+      const progress = stageProgress(stage, status);
+      const slot = node.querySelector("[data-stage-progress]");
+      if (slot) {
+        if (slot.textContent !== progress) slot.textContent = progress;
+        slot.hidden = !progress;
+      }
+      const arrow = world.querySelector(`[data-arrow-after="${stage}"]`);
+      if (arrow) arrow.classList.toggle("success", className === "success");
+    });
+  }
+
   function renderWorkflow() {
     if (!app.state || !$("workflow-canvas")) return;
-    const stageCards = workflowNodes.map(([stage, label, icon], index) => {
-      const status = stageStatus(stage);
-      const statusClass = status === "succeeded" || status === "completed" ? "success" : status === "failed" ? "failed" : status.includes("waiting") ? "waiting" : status === "running" ? "running" : "pending";
-      const progress = stageProgress(stage, status);
-      const action = (name, iconName, title) => `<button type="button" class="stage-action" data-stage-action="${name}" data-stage="${stage}" title="${title}" aria-label="${title}"><i data-lucide="${iconName}"></i></button>`;
-      return `${index ? `<div class="workflow-arrow ${statusClass === "success" ? "success" : ""}"><i data-lucide="arrow-right"></i></div>` : ""}<article class="workflow-stage-node ${statusClass}" data-workflow-stage="${stage}" tabindex="0"><div class="workflow-node-icon"><i data-lucide="${icon}"></i></div><strong>${label}</strong><span>${stageStatusLabel(status)}</span>${progress ? `<em>${esc(progress)}</em>` : ""}<div class="workflow-stage-actions">${action("logs", "scroll-text", "查看日志")}${action("params", "sliders-horizontal", "查看参数")}${action("rerun", "rotate-ccw", "从此处重跑")}${action("takeover", "hand", "接管节点")}</div></article>`;
-    }).join("");
-    $("workflow-world").innerHTML = `<div class="workflow-entry">开始</div>${stageCards}<div class="workflow-entry workflow-end">完成</div>`;
-    $("workflow-world").querySelectorAll("[data-workflow-stage]").forEach((node) => {
-      const activate = () => { if (!app.workflowCanvas.moved) inspectWorkflowStage(node.dataset.workflowStage); };
-      node.addEventListener("click", activate);
-      node.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } });
-    });
-    $("workflow-world").querySelectorAll("[data-stage-action]").forEach((button) => button.addEventListener("click", (event) => {
-      event.stopPropagation();
-      handleStageAction(button.dataset.stageAction, button.dataset.stage);
-    }));
+    if (!app.workflowBuilt) buildWorkflowGraph();
+    updateWorkflowNodes();
     if (!app.workflowCanvas.ready) fitWorkflowCanvas(); else applyWorkflowCanvas();
-    const activeStage = Object.keys(toolStages).map((tool) => toolStages[tool]).find((stage) => ["running", "waiting_approval", "waiting_input", "waiting_execution", "failed"].includes(stageStatus(stage)));
-    if (activeStage) inspectWorkflowStage(activeStage);
-    const recent = app.events.slice(-1)[0]; $("workflow-updated").textContent = recent ? new Date(recent.timestamp).toLocaleTimeString() : "等待事件";
+    const activeStage = workflowNodes.map(([stage]) => stage)
+      .find((stage) => ATTENTION_STATUSES.includes(stageStatus(stage)));
+    // Follow the run only until the user picks a node themselves. Otherwise
+    // opening one stage's details and having the next event yank you back to
+    // whatever is running makes the inspector unusable during a run.
+    if (activeStage && !app.stagePickedByUser && app.selectedStage !== activeStage) {
+      inspectWorkflowStage(activeStage);
+      updateWorkflowNodes();
+    }
+    const recent = app.events.slice(-1)[0]; $("workflow-updated").textContent = recent ? new Date(recent.timestamp).toLocaleTimeString() : t("等待事件");
     const modelEvent = app.events.slice().reverse().find((item) => item.type === "model_started");
     const modelName = modelEvent?.model || app.state.model?.model || "—";
     $("workflow-model").textContent = "模型 " + modelName;
@@ -462,18 +557,21 @@
     const stage = app.selectedStage;
     const data = app.parameters;
     if (!data || data.run_key !== app.runKey) {
-      fields.innerHTML = `<div class="empty-state">${app.runKey ? "参数尚未载入。" : "本项目暂无运行。"}</div>`;
+      fields.innerHTML = `<div class="empty-state">${app.runKey ? t("参数尚未载入。") : t("本项目暂无运行。")}</div>`;
       $("stage-parameters-actions").hidden = true;
       $("stage-parameters-note").hidden = true;
       $("stage-parameters-state").textContent = "";
+      if (!app.runKey || !stage) {
+        fields.innerHTML = `<div class="empty-state">${!app.runKey ? t("本项目暂无运行。") : t("选择一个阶段查看它的参数。")}</div>`;
+      }
       return;
     }
     const items = data.parameters.filter((item) => item.stage === stage);
-    $("stage-parameters-state").textContent = data.editable ? "" : "运行中不可修改";
+    $("stage-parameters-state").textContent = data.editable ? "" : t("运行中不可修改");
     if (!items.length) {
       // Honest about stages that genuinely expose nothing, rather than
       // showing an empty box that looks broken.
-      fields.innerHTML = `<div class="empty-state">这个阶段没有可调参数。</div>`;
+      fields.innerHTML = `<div class="empty-state">${t("这个阶段没有可调参数。")}</div>`;
       $("stage-parameters-actions").hidden = true;
       $("stage-parameters-note").hidden = true;
       return;
@@ -622,7 +720,7 @@
   function updateWorkflowElapsed() {
     if (!app.state || !$("workflow-elapsed")) return;
     const start = app.events.find((item) => item.type === "run_started")?.timestamp;
-    $("workflow-elapsed").textContent = "Elapsed " + (start ? duration(start, app.events.at(-1)?.timestamp) : "—");
+    $("workflow-elapsed").textContent = t("耗时") + " " + (start ? duration(start, app.events.at(-1)?.timestamp) : "—");
   }
 
   function artifactCount(stage) {
@@ -663,12 +761,12 @@
 
   function renderWorkflowLineage() {
     const artifacts = Object.values(app.state.artifacts || {}).flat().slice(-12);
-    $("workflow-lineage").innerHTML = artifacts.length ? artifacts.map((item) => `<span class="lineage-item"><i data-lucide="file-output"></i>${esc(item.kind)}<small>${esc(item.path.split("/").pop())}</small></span>`).join(`<i class="lineage-arrow" data-lucide="chevron-right"></i>`) : `<span class="muted">Artifacts will appear here as stages publish outputs.</span>`;
+    $("workflow-lineage").innerHTML = artifacts.length ? artifacts.map((item) => `<span class="lineage-item"><i data-lucide="file-output"></i>${esc(item.kind)}<small>${esc(item.path.split("/").pop())}</small></span>`).join(`<i class="lineage-arrow" data-lucide="chevron-right"></i>`) : `<span class="muted">${t("阶段产出后，产物会显示在这里。")}</span>`;
   }
 
   function renderEventList() {
     const items = app.events.slice(-30).reverse();
-    $("event-list").innerHTML = items.length ? items.map((item) => `<div class="event-row"><span class="event-time">${esc(new Date(item.timestamp).toLocaleTimeString())}</span><span class="event-kind ${esc(item.status || "")}">${esc(item.type.replaceAll("_", " "))}</span><span class="event-stage">${esc(item.stage || item.tool || "supervisor")}</span><span class="event-detail">${esc(item.error || item.reason || item.kind || item.model || (item.observation?.status ? `status ${item.observation.status}` : ""))}</span></div>`).join("") : `<div class="empty-state">No events recorded yet.</div>`;
+    $("event-list").innerHTML = items.length ? items.map((item) => `<div class="event-row"><span class="event-time">${esc(new Date(item.timestamp).toLocaleTimeString())}</span><span class="event-kind ${esc(item.status || "")}">${esc(item.type.replaceAll("_", " "))}</span><span class="event-stage">${esc(item.stage || item.tool || "supervisor")}</span><span class="event-detail">${esc(item.error || item.reason || item.kind || item.model || (item.observation?.status ? `status ${item.observation.status}` : ""))}</span></div>`).join("") : `<div class="empty-state">${t("暂无运行事件。")}</div>`;
   }
 
   function renderRunFacts() {
@@ -679,8 +777,8 @@
   function renderCosts() {
     const costs = app.state.costs || { models: {}, pricing: {} };
     const rows = Object.entries(costs.models || {});
-    const total = costs.estimated_usd == null ? "Cost not priced" : `$${Number(costs.estimated_usd).toFixed(6)}`;
-    $("cost-summary").innerHTML = `<div class="cost-total"><span>Estimated model cost</span><strong>${esc(total)}</strong></div><div class="cost-tokens">${Number(costs.input_tokens || 0).toLocaleString()} input · ${Number(costs.output_tokens || 0).toLocaleString()} output tokens</div>${rows.map(([model, row]) => `<div class="cost-model"><strong>${esc(model)}</strong><span>${Number(row.input_tokens || 0).toLocaleString()} / ${Number(row.output_tokens || 0).toLocaleString()} tokens</span><small>${row.estimated_usd == null ? "No rate or usage data" : `$${Number(row.estimated_usd).toFixed(6)}`}</small></div>`).join("")}`;
+    const total = costs.estimated_usd == null ? t("未设置价格") : `$${Number(costs.estimated_usd).toFixed(6)}`;
+    $("cost-summary").innerHTML = `<div class="cost-total"><span>${t("预估模型成本")}</span><strong>${esc(total)}</strong></div><div class="cost-tokens">${Number(costs.input_tokens || 0).toLocaleString()} ${t("输入")} · ${Number(costs.output_tokens || 0).toLocaleString()} ${t("输出 token")}</div>${rows.map(([model, row]) => `<div class="cost-model"><strong>${esc(model)}</strong><span>${Number(row.input_tokens || 0).toLocaleString()} / ${Number(row.output_tokens || 0).toLocaleString()} tokens</span><small>${row.estimated_usd == null ? t("无价格或用量数据") : `$${Number(row.estimated_usd).toFixed(6)}`}</small></div>`).join("")}`;
     const model = app.state.model?.model || rows[0]?.[0] || "";
     const rate = costs.pricing?.[model] || {};
     if (document.activeElement !== $("price-input")) $("price-input").value = rate.input_usd_per_million ?? "";
@@ -736,7 +834,7 @@
       if (app.terminalPollTimer) window.clearInterval(app.terminalPollTimer); app.terminalPollTimer = null;
       app.terminal?.reset();
       if (app.codeEditor) app.codeEditor.setValue(""); else $("file-editor").value = "";
-      $("file-editor").value = ""; $("editor-file-label").textContent = "No file selected"; $("editor-language").textContent = "";
+      $("file-editor").value = ""; $("editor-file-label").textContent = t("未选择文件"); $("editor-language").textContent = "";
       $("editor-empty").hidden = false; $("save-file").disabled = true;
       await fetchProjects();
       await fetchRuns();
@@ -755,10 +853,10 @@
         const disabled = entry.kind === "file" && entry.previewable === false;
         const ext = entry.name.toLowerCase().split(".").pop();
         const icon = entry.kind === "directory" ? "folder" : disabled ? "file-x-2" : editorModes[ext] ? "file-code-2" : "file-text";
-        const title = disabled ? entry.preview_reason || "Preview unavailable" : entry.kind === "directory" ? "Open folder" : "Open file";
+        const title = disabled ? entry.preview_reason || t("无法预览") : entry.kind === "directory" ? t("打开文件夹") : t("打开文件");
         return `<button class="file-entry ${entry.kind} ${disabled ? "unsupported" : ""}" data-file-path="${esc(entry.path)}" data-file-kind="${entry.kind}" ${disabled ? "disabled" : ""} title="${esc(title)}"><i data-lucide="${icon}"></i><span>${esc(entry.name)}</span>${entry.kind === "file" ? `<small>${formatBytes(entry.size)}${disabled ? " · 不可预览" : ""}</small>` : ""}</button>`;
       }).join("");
-      $("file-tree").innerHTML = parent + rows || `<div class="empty-state">This folder is empty.</div>`;
+      $("file-tree").innerHTML = parent + rows || `<div class="empty-state">${t("此文件夹为空")}</div>`;
       if (data.truncated) $("file-tree").insertAdjacentHTML("afterbegin", `<div class="file-list-note">仅显示前 500 项</div>`);
       $("file-tree").querySelectorAll("[data-file-kind]:not(:disabled)").forEach((button) => button.addEventListener("click", () => button.dataset.fileKind === "directory" ? openProjectDirectory(button.dataset.filePath) : openProjectFile(button.dataset.filePath)));
       $("file-tree").querySelector("[data-file-parent]")?.addEventListener("click", () => openProjectDirectory(app.fileDirectory.split("/").slice(0, -1).join("/")));
@@ -793,14 +891,14 @@
       const content = app.codeEditor ? app.codeEditor.getValue() : $("file-editor").value;
       const response = await postJson("/api/project/file", { path: app.filePath, content });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      toast(`Saved ${data.path}`); refreshProjectFiles();
+      toast(`${t("已保存")} ${data.path}`); refreshProjectFiles();
     } catch (error) { toast(error.message, true); }
   }
 
   function createTerminal() {
     if (app.terminal) return true;
     if (!window.Terminal || !window.FitAddon?.FitAddon) {
-      $("terminal-screen").textContent = "Terminal library could not be loaded.";
+      $("terminal-screen").textContent = t("终端组件加载失败。");
       return false;
     }
     app.terminal = new window.Terminal({
@@ -1035,7 +1133,7 @@
       });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       history.push({ role: "assistant", content: data.reply, actions: data.actions || [] });
-    } catch (error) { history.push({ role: "assistant", content: `Unable to respond: ${error.message}` }); }
+    } catch (error) { history.push({ role: "assistant", content: `${t("无法回复")}：${error.message}` }); }
     app.chatBusy = false; $("send-chat").disabled = false;
     renderChatStatus();
     if (app.projectId === projectId) {
@@ -1052,10 +1150,12 @@
       resetRunBox();
       app.runKey = data.selected || runKey;
       if (data.project_id) app.projectId = data.project_id;
+      // A node chosen in the previous run says nothing about this one.
+      app.stagePickedByUser = false;
       app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null;
       disposeViewers();
       $("result-provenance")?.setAttribute("hidden", "");
-      await fetchState(); toast(`已选择运行 ${app.runKey}`);
+      await fetchState(); toast(`${t("已选择运行")} ${app.runKey}`);
     } catch (error) { toast(error.message, true); await fetchRuns(); }
   }
 
@@ -1063,7 +1163,7 @@
     try {
       const response = await postJson("/api/control", { action });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      toast(action === "pause" ? "Pause requested; waiting for a safe checkpoint" : "Cancel requested; waiting for a safe checkpoint");
+      toast(action === "pause" ? t("已请求暂停，将在下一个安全检查点生效") : t("已请求取消，将在下一个安全检查点生效"));
       await fetchState();
     } catch (error) { toast(error.message, true); }
   }
@@ -1082,11 +1182,11 @@
 
   async function savePricing() {
     try {
-      if (!$("price-input").value.trim() || !$("price-output").value.trim()) throw new Error("Enter both input and output token rates");
+      if (!$("price-input").value.trim() || !$("price-output").value.trim()) throw new Error(t("请同时填写输入和输出的价格"));
       const payload = { model: app.pricing.model, input_usd_per_million: Number($("price-input").value), output_usd_per_million: Number($("price-output").value) };
       const response = await postJson("/api/pricing", payload);
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      app.state.costs = data; renderCosts(); toast("Model rates saved for this run");
+      app.state.costs = data; renderCosts(); toast(t("模型价格已保存到本次运行"));
     } catch (error) { toast(error.message, true); }
   }
 
@@ -1178,12 +1278,12 @@
       const residues = app.state.target?.binding_site_residues || [];
       $("pocket-detail").innerHTML = residues.length
         ? `<div class="detail-item"><label>REFERENCE SITE</label><strong>Provided in target input</strong></div><div class="detail-item"><label>RESIDUES</label><strong>${residues.length}</strong></div><div class="residue-list">${residues.map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("")}</div>`
-        : `<span class="muted">No predicted or reference site residues.</span>`;
+        : `<span class="muted">${t("没有预测口袋或参考位点残基。")}</span>`;
       return;
     }
     const center = pocket.box?.center || pocket.center || [];
     const size = pocket.box?.size || [];
-    $("pocket-detail").innerHTML = `<div class="detail-item"><label>CENTER X / Y / Z</label><strong class="mono">${center.map((n) => fmt(n, 2)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>BOX Å</label><strong class="mono">${size.map((n) => fmt(n, 1)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>PROBABILITY</label><strong>${fmt(pocket.probability, 3)}</strong></div><div class="detail-item"><label>SURFACE POINTS</label><strong>${esc(pocket.surface_points ?? "—")}</strong></div><div class="residue-list">${(pocket.residue_ids || []).map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("") || `<span class="muted">No residue labels</span>`}</div>`;
+    $("pocket-detail").innerHTML = `<div class="detail-item"><label>CENTER X / Y / Z</label><strong class="mono">${center.map((n) => fmt(n, 2)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>BOX Å</label><strong class="mono">${size.map((n) => fmt(n, 1)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>PROBABILITY</label><strong>${fmt(pocket.probability, 3)}</strong></div><div class="detail-item"><label>SURFACE POINTS</label><strong>${esc(pocket.surface_points ?? "—")}</strong></div><div class="residue-list">${(pocket.residue_ids || []).map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("") || `<span class="muted">${t("无残基标签")}</span>`}</div>`;
   }
 
   function structureCoordinateKey() {
@@ -1199,7 +1299,7 @@
     app.structureAtoms = []; renderBoxCoverage();
     try {
       const response = await fetch(fileUrl(artifact.path));
-      if (!response.ok) throw new Error(`Structure request failed (${response.status})`);
+      if (!response.ok) throw new Error(`${t("结构请求失败")} (${response.status})`);
       const text = await response.text();
       if (request !== app.structureRequestId || key !== structureCoordinateKey()) return null;
       app.structureAtoms = parseReceptorAtoms(text);
@@ -1209,7 +1309,7 @@
     } catch (error) {
       if (request === app.structureRequestId && key === structureCoordinateKey()) {
         app.structureAtoms = []; renderBoxCoverage();
-        showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || "request failed"}`);
+        showViewerMessage("protein-viewer", `${t("无法载入结构")}：${error.message || t("请求失败")}`);
       }
       return null;
     }
@@ -1220,8 +1320,8 @@
     const text = await loadStructureCoordinates();
     if (text === null || key !== structureCoordinateKey()) return;
     $("structure-file").textContent = app.structureArtifact.path;
-    if (!window.$3Dmol) { $("protein-viewer").innerHTML = `<div class="viewer-placeholder">3D viewer library unavailable</div>`; return; }
-    if (!webglAvailable()) { showViewerMessage("protein-viewer", "WebGL is disabled in this browser. Enable hardware acceleration to view 3D structures."); return; }
+    if (!window.$3Dmol) { $("protein-viewer").innerHTML = `<div class="viewer-placeholder">${t("3D 查看器组件不可用")}</div>`; return; }
+    if (!webglAvailable()) { showViewerMessage("protein-viewer", t("浏览器禁用了 WebGL；开启硬件加速后才能查看 3D 结构。")); return; }
     try {
       app.proteinViewer?.clear?.();
       $("protein-viewer").innerHTML = "";
@@ -1234,7 +1334,7 @@
       onBoxInputChanged();
       fitProteinView();
     } catch (error) {
-      if (key === structureCoordinateKey()) showViewerMessage("protein-viewer", `Unable to load structure: ${error.message || "3D renderer failed"}`);
+      if (key === structureCoordinateKey()) showViewerMessage("protein-viewer", `${t("无法载入结构")}：${error.message || t("3D 渲染失败")}`);
     }
   }
 
@@ -1305,10 +1405,10 @@
         const focus = siteSelections.length === 1 ? siteSelections[0] : { or: siteSelections };
         try { app.proteinViewer.zoomTo(focus); }
         catch (_) { app.proteinViewer.zoomTo(); }
-        $("viewer-hint").textContent = app.selectedPocket ? `Predicted pocket · ${siteSelections.length} residues` : `Reference site · ${siteSelections.length} residues`;
+        $("viewer-hint").textContent = app.selectedPocket ? `${t("预测口袋")} · ${siteSelections.length} ${t("个残基")}` : `${t("参考位点")} · ${siteSelections.length} ${t("个残基")}`;
       } else {
         app.proteinViewer.setStyle(protein, { cartoon: { color: "spectrum" } });
-        $("viewer-hint").textContent = "PDB coordinate frame";
+        $("viewer-hint").textContent = t("PDB 坐标系");
         if (app.selectedPocket) showPocket(app.selectedPocket);
       }
       app.proteinStyle = style;
@@ -1321,7 +1421,7 @@
       app.proteinViewer.render();
       app.proteinStyle = "cartoon";
       document.querySelectorAll("[data-protein-style]").forEach((button) => button.classList.toggle("active", button.dataset.proteinStyle === "cartoon"));
-      $("viewer-hint").textContent = "PDB coordinate frame";
+      $("viewer-hint").textContent = t("PDB 坐标系");
       toast(error.message || "无法显示结合位点。", true);
     }
   }
@@ -1526,13 +1626,13 @@
     const artifact = candidates.find((item) => item.kind === "prepared_ligand_sdf") || candidates.find((item) => item.metadata?.relative_output?.endsWith("/poses.sdf"));
     const reportLigand = (app.state.report?.ligands || []).find((item) => item.ligand_id === ligand.ligand_id);
     $("ligand-identity").textContent = ligand.ligand_id;
-    $("ligand-file").textContent = artifact?.path || "No 3D artifact";
+    $("ligand-file").textContent = artifact?.path || t("无 3D 产物");
     renderProperties(reportLigand);
-    if (!artifact || !window.$3Dmol) { $("ligand-viewer").innerHTML = `<div class="viewer-placeholder"><i data-lucide="atom"></i><span>No 3D ligand artifact</span></div>`; return; }
-    if (!webglAvailable()) { showViewerMessage("ligand-viewer", "WebGL is disabled in this browser. Enable hardware acceleration to view 3D molecules."); return; }
+    if (!artifact || !window.$3Dmol) { $("ligand-viewer").innerHTML = `<div class="viewer-placeholder"><i data-lucide="atom"></i><span>${t("无 3D 小分子产物")}</span></div>`; return; }
+    if (!webglAvailable()) { showViewerMessage("ligand-viewer", t("浏览器禁用了 WebGL；开启硬件加速后才能查看 3D 分子。")); return; }
     try {
       const response = await fetch(fileUrl(artifact.path));
-      if (!response.ok) throw new Error(`Structure request failed (${response.status})`);
+      if (!response.ok) throw new Error(`${t("结构请求失败")} (${response.status})`);
       const text = await response.text();
       $("ligand-viewer").innerHTML = "";
       app.ligandViewer = window.$3Dmol.createViewer($("ligand-viewer"), { backgroundColor: "#0e1116", antialias: true });
@@ -1542,7 +1642,7 @@
       app.ligandViewer.zoomTo(); app.ligandViewer.render();
       app.ligandKey = artifact.path;
       $("ligand-atoms").textContent = reportLigand?.properties?.heavy_atoms ? `${reportLigand.properties.heavy_atoms} heavy atoms` : "3D conformer";
-    } catch (error) { showViewerMessage("ligand-viewer", `Unable to load ligand: ${error.message || String(error) || "3D renderer failed"}`); }
+    } catch (error) { showViewerMessage("ligand-viewer", `${t("无法载入小分子")}：${error.message || String(error) || t("3D 渲染失败")}`); }
   }
 
   function webglAvailable() {
@@ -1556,8 +1656,8 @@
 
   function renderProperties(item) {
     const props = item?.properties;
-    $("ligand-quality").textContent = props ? (item.status === "succeeded" ? "QC PASS" : String(item.status || "reported").toUpperCase()) : "NO REPORT";
-    if (!props) { $("ligand-properties").innerHTML = `<div class="empty-state">No assessment report.</div>`; $("ligand-alerts").innerHTML = ""; return; }
+    $("ligand-quality").textContent = props ? (item.status === "succeeded" ? t("质控通过") : String(item.status || "reported").toUpperCase()) : t("无报告");
+    if (!props) { $("ligand-properties").innerHTML = `<div class="empty-state">${t("暂无评估报告。")}</div>`; $("ligand-alerts").innerHTML = ""; return; }
     const rows = [["分子量", `${fmt(props.mw)} Da`], ["cLogP", fmt(props.logp)], ["TPSA", `${fmt(props.tpsa)} Å²`], ["氢键供体 / 受体", `${props.hbd ?? "—"} / ${props.hba ?? "—"}`], ["QED", fmt(props.qed, 3)], ["Csp3 比例", fmt(props.fraction_csp3, 3)], ["可旋转键", props.rotatable_bonds ?? "—"], ["Lipinski", (props.lipinski_violations || []).length ? `${props.lipinski_violations.length} 项超限` : "通过"]];
     $("ligand-properties").innerHTML = rows.map(([label, value]) => `<div class="property-row"><label>${label}</label><strong>${esc(value)}</strong></div>`).join("");
     const alerts = [...(props.alerts?.pains || []).map((item) => `PAINS · ${item}`), ...(props.alerts?.brenk || []).map((item) => `Brenk · ${item}`)];
@@ -1582,8 +1682,8 @@
     $("result-explanation").querySelectorAll("[data-provenance-artifact]").forEach((button) => button.addEventListener("click", () => loadProvenance(button.dataset.provenanceArtifact)));
     $("result-attempt").textContent = report.docking_attempt ? `第 ${report.docking_attempt} 次运行` : "最近一次报告";
     $("task-table").innerHTML = tasks.length ? tasks.map((task, index) => { const score = task.best_pose?.affinity_kcal_mol ?? task.score_kcal_mol ?? task.score; return `<tr data-result-row="${index}" tabindex="0"><td>${esc(task.state_id || task.ligand_id || "—")}</td><td class="mono-cell">${esc(task.task_id || "—")}</td><td class="score">${fmt(score, 3)} kcal/mol</td><td>${esc(task.qc_pass_count ?? "—")}</td><td><span class="state-tag ${task.status === "succeeded" || task.status === "complete" ? "success" : task.status === "failed" ? "failed" : ""}">${esc(task.status || "—")}</span></td></tr>`; }).join("") : `<tr><td colspan="5" class="muted">暂无对接任务。</td></tr>`;
-    $("property-table").innerHTML = ligands.length ? ligands.map((item) => { const p = item.properties || {}; const alerts = (p.alerts?.pains || []).length + (p.alerts?.brenk || []).length; return `<tr><td>${esc(item.ligand_id)}</td><td>${fmt(p.mw)}</td><td>${fmt(p.logp)}</td><td>${fmt(p.tpsa)}</td><td>${fmt(p.qed, 3)}</td><td>${alerts ? `<span style="color:var(--amber)">${alerts}</span>` : `<span style="color:var(--teal)">0</span>`}</td></tr>`; }).join("") : `<tr><td colspan="6" class="muted">No molecular assessment reported.</td></tr>`;
-    $("limitations-list").innerHTML = (report.limitations || ["No assessment report is available."]).map((item) => `<div class="limitation">${esc(item)}</div>`).join("");
+    $("property-table").innerHTML = ligands.length ? ligands.map((item) => { const p = item.properties || {}; const alerts = (p.alerts?.pains || []).length + (p.alerts?.brenk || []).length; return `<tr><td>${esc(item.ligand_id)}</td><td>${fmt(p.mw)}</td><td>${fmt(p.logp)}</td><td>${fmt(p.tpsa)}</td><td>${fmt(p.qed, 3)}</td><td>${alerts ? `<span style="color:var(--amber)">${alerts}</span>` : `<span style="color:var(--teal)">0</span>`}</td></tr>`; }).join("") : `<tr><td colspan="6" class="muted">${t("暂无分子评估结果。")}</td></tr>`;
+    $("limitations-list").innerHTML = (report.limitations || [t("暂无评估报告。")]).map((item) => `<div class="limitation">${esc(item)}</div>`).join("");
     document.querySelectorAll("[data-result-row]").forEach((row) => row.addEventListener("click", () => showView("structure")));
   }
 
@@ -1664,7 +1764,7 @@
   }
 
   async function continueWorkflow() {
-    try { const response = await postJson("/api/continue", { model: $("chat-model").value.trim(), conversation_id: app.chatId }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast(data.status === "already_running" ? "Workflow is already running" : data.status === "already_complete" ? "Workflow is already complete" : "Workflow started"); await fetchState(); } catch (error) { toast(error.message, true); }
+    try { const response = await postJson("/api/continue", { model: $("chat-model").value.trim(), conversation_id: app.chatId }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast(data.status === "already_running" ? t("工作流已在运行") : data.status === "already_complete" ? t("工作流已完成") : t("工作流已启动")); await fetchState(); } catch (error) { toast(error.message, true); }
   }
 
   function toast(message, error = false) { const node = $("toast"); node.textContent = message; node.className = `toast show ${error ? "error" : ""}`; window.clearTimeout(node._timer); node._timer = window.setTimeout(() => node.classList.remove("show"), 3500); }
@@ -1701,7 +1801,7 @@
     $("open-terminal").addEventListener("click", openTerminalDock);
     $("close-terminal").addEventListener("click", closeTerminalDock);
     $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.boxShapes = []; drawDockingBox(); fitProteinView(); } });
-    $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt("New project-relative file name"); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
+    $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt(t("新文件名（相对项目根目录）")); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
     $("chat-model").addEventListener("change", (event) => localStorage.setItem("dock-agent-chat-model", event.target.value.trim()));
     $("open-model-settings").addEventListener("click", () => {
       $("model-settings-dialog").showModal();
@@ -1713,7 +1813,7 @@
       $("chat-temperature-value").value = event.target.value;
       localStorage.setItem("dock-agent-chat-temperature", event.target.value);
     });
-    $("auth-form").addEventListener("submit", async (event) => { event.preventDefault(); const token = $("auth-token").value; const ok = await authenticate(token); if (ok) { $("auth-error").textContent = ""; initializeWorkspace(); } else { $("auth-error").textContent = "Token did not match this server."; } });
+    $("auth-form").addEventListener("submit", async (event) => { event.preventDefault(); const token = $("auth-token").value; const ok = await authenticate(token); if (ok) { $("auth-error").textContent = ""; initializeWorkspace(); } else { $("auth-error").textContent = t("访问令牌与本服务器不匹配。"); } });
     $("file-editor").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveProjectFile(); } });
     $("chat-input").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); $("chat-form").requestSubmit(); } });
     document.querySelectorAll("[data-protein-style]").forEach((button) => button.addEventListener("click", () => setProteinStyle(button.dataset.proteinStyle)));

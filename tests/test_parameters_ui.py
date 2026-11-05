@@ -104,6 +104,40 @@ class StageParametersPanel(harness.BrowserHarness):
         self.assertNotEqual(before, after)
         self.assertEqual(self.page.inner_text('#workflow-node-title'), title)
 
+    def set_stage_status(self, stage, status):
+        path = self.run_root / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest.setdefault("stage_results", {})[stage] = {"status": status}
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def refresh(self, times=1):
+        for _ in range(times):
+            self.page.evaluate("document.querySelector('#refresh-button').click()")
+            self.page.wait_for_timeout(350)
+
+    def test_the_graph_follows_the_run_until_the_user_picks_a_node(self):
+        self.set_stage_status("docking", "running")
+        self.refresh()
+        self.assertEqual(self.page.inner_text("#workflow-node-title"), "分子对接")
+
+    def test_a_manual_pick_survives_incoming_events(self):
+        self.set_stage_status("docking", "running")
+        self.refresh()
+        self.page.click('[data-workflow-stage="receptor"]')
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.page.inner_text("#workflow-node-title"), "受体准备")
+        self.refresh(times=4)
+        self.assertEqual(self.page.inner_text("#workflow-node-title"), "受体准备")
+
+    def test_updates_patch_the_graph_instead_of_rebuilding_it(self):
+        self.page.evaluate("document.querySelector('[data-workflow-stage=\"docking\"]').dataset.probe = 'kept'")
+        self.page.focus('[data-workflow-stage="docking"]')
+        for _ in range(3):
+            self.page.evaluate("document.querySelector('#refresh-button').click()")
+            self.page.wait_for_timeout(250)
+        self.assertEqual(self.page.get_attribute('[data-workflow-stage="docking"]', "data-probe"), "kept")
+        self.assertEqual(self.page.evaluate("document.activeElement.dataset.workflowStage"), "docking")
+
     def test_reset_restores_the_defaults_for_that_stage(self):
         self.page.fill('#param-exhaustiveness', '64')
         self.page.click('#reset-parameters')

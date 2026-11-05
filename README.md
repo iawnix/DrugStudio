@@ -108,6 +108,25 @@ Box centre and size are deliberately not parameters. They are a human
 review decision, recorded through `overrides` by the review command and the
 review panel.
 
+### Chat tools and approval
+
+The project assistant is given the run's current state — stage statuses and
+errors, pocket candidates, docking counts and best score, recent failures
+and human decisions, and any parameter that differs from its default — so it
+answers from the manifest rather than searching the filesystem for what the
+manifest already says.
+
+Its read-only tools (`list_files`, `read_file`) run directly. The two that
+change something, `run_command` and `write_file`, do not: the turn suspends,
+the exact command or file is shown in the transcript, and nothing happens
+until a person approves it. A refusal is relayed to the model with the
+reason so it proposes something else instead of retrying. Both the request
+and the decision go on the run's event timeline.
+
+This is a control rather than an instruction in the prompt. A prompt asking
+the model to check first is a request the model may not honour, and
+`run_command` is a shell.
+
 The server keeps no current project or current run of its own. Every request
 names its own scope through `project_id` and `run_key`, so two browser tabs,
 or two people, can work on different runs at the same time without changing

@@ -4,7 +4,7 @@
 
   const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
     boxVisible: false, boxShapes: [], structureAtoms: [],
-    parameters: null, parameterEdits: {}, workflowBuilt: false, stagePickedByUser: false };
+    parameters: null, parameterEdits: {}, workflowBuilt: false, stagePickedByUser: false, pendingAction: null };
   const editorModeLoads = new Map();
   const editorModes = {
     py: ["python", "python", "Python"], pyi: ["python", "python", "Python"],
@@ -1047,18 +1047,85 @@
   function renderChat() {
     const messages = app.chatHistory || [];
     $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? "你" : "DrugStudio"}</div><div class="chat-content">${esc(item.content).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-empty"><i data-lucide="messages-square"></i><span>从当前项目开始新对话</span></div>`;
+    $("chat-messages").insertAdjacentHTML("beforeend", pendingActionCard());
+    $("approve-action")?.addEventListener("click", () => decideChatAction(true));
+    $("reject-action")?.addEventListener("click", () => decideChatAction(false));
     if (window.lucide) window.lucide.createIcons();
     $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
     const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
-    $("project-title").textContent = current?.title || "新对话";
+    $("project-title").textContent = current?.title || t("新对话");
+  }
+
+  // A turn can come back suspended: the model asked to run a command or
+  // write a file, and nothing has happened yet. The card is the gate, so it
+  // lives in the transcript rather than as a toast that can be missed.
+  function absorbChatReply(history, data) {
+    if (data.reply) history.push({ role: "assistant", content: data.reply, actions: data.actions || [] });
+    app.pendingAction = data.pending || null;
+    if (data.pending && !data.reply) {
+      history.push({ role: "assistant", content: t("需要你确认下面的操作。"), actions: data.actions || [] });
+    }
+  }
+
+  function pendingActionCard() {
+    const pending = app.pendingAction;
+    if (!pending) return "";
+    const isCommand = pending.tool === "run_command";
+    const detail = isCommand
+      ? `<pre class="pending-command">${esc(pending.command)}</pre>${pending.cwd ? `<div class="pending-meta">${t("工作目录")}: ${esc(pending.cwd)}</div>` : ""}`
+      : `<div class="pending-meta">${t("写入文件")}: <code>${esc(pending.path)}</code> · ${pending.content_bytes} ${t("字节")}</div>${pending.content_preview ? `<pre class="pending-command">${esc(pending.content_preview)}</pre>` : ""}`;
+    return `<article class="pending-action" id="pending-action">
+      <div class="pending-heading"><i data-lucide="shield-alert"></i><strong>${t(isCommand ? "AI 请求执行命令" : "AI 请求写入文件")}</strong></div>
+      ${detail}
+      <label class="pending-reason">${t("理由（拒绝时会转达给 AI）")}<input id="pending-reason" class="input-control" type="text" placeholder="${t("可选")}"></label>
+      <div class="pending-actions">
+        <button class="secondary-button" type="button" id="reject-action">${t("拒绝")}</button>
+        <button class="primary-button" type="button" id="approve-action">${t("批准并执行")}</button>
+      </div>
+    </article>`;
+  }
+
+  async function decideChatAction(approved) {
+    const pending = app.pendingAction;
+    if (!pending || app.chatBusy) return;
+    const reason = $("pending-reason")?.value || "";
+    app.chatBusy = true; app.pendingAction = null;
+    $("chat-status").textContent = approved ? t("正在执行…") : t("已拒绝");
+    renderChat();
+    const history = app.chatHistory;
+    try {
+      const response = await postJson("/api/project/chat/decide",
+        { action_id: pending.action_id, approved, reason });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      history.push({ role: "user", content: approved ? t("（已批准该操作）") : `${t("（已拒绝该操作）")}${reason ? ` ${reason}` : ""}` });
+      absorbChatReply(history, data);
+    } catch (error) {
+      history.push({ role: "assistant", content: `${t("无法回复")}：${error.message}` });
+    }
+    app.chatBusy = false;
+    renderChatStatus();
+    try { await persistChat(); } catch (error) { toast(error.message, true); }
+    renderChat();
   }
 
   async function sendChat(event) {
     event.preventDefault();
     const input = $("chat-input"), content = input.value.trim(); if (!content || app.chatBusy) return;
     const projectId = app.projectId, history = app.chatHistory;
+    if (app.pendingAction) {
+      // Moving on without answering is itself an answer. Record it as a
+      // refusal so the audit trail does not just lose the request, and so
+      // the suspended call cannot be resumed later.
+      const abandoned = app.pendingAction;
+      app.pendingAction = null;
+      postJson("/api/project/chat/decide", {
+        action_id: abandoned.action_id, approved: false, resume: false,
+        reason: t("用户未处理该请求，改为发送了新消息"),
+      }).catch(() => { /* the request had already expired */ });
+    }
     history.push({ role: "user", content }); input.value = ""; app.chatBusy = true; $("send-chat").disabled = true; renderChat();
-    $("chat-status").textContent = "Agent 正在处理";
+    $("chat-status").textContent = t("Agent 正在处理");
     $("chat-status").classList.remove("chat-status-offline");
     try { await persistChat(); } catch (error) { toast(error.message, true); }
     try {
@@ -1067,7 +1134,7 @@
         model: $("chat-model").value.trim(), temperature: Number($("chat-temperature").value)
       });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      history.push({ role: "assistant", content: data.reply, actions: data.actions || [] });
+      absorbChatReply(history, data);
     } catch (error) { history.push({ role: "assistant", content: `${t("无法回复")}：${error.message}` }); }
     app.chatBusy = false; $("send-chat").disabled = false;
     renderChatStatus();

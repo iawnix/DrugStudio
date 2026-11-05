@@ -782,3 +782,13 @@ html, body { background: var(--bg); color: var(--ink); }
 .stage-parameters-actions { display: flex; gap: 8px; margin-top: 15px; }
 .stage-parameters-actions .primary-button, .stage-parameters-actions .secondary-button { flex: 1; justify-content: center; }
 .stage-parameters-note { color: var(--amber); font-size: 11px; line-height: 1.5; margin: 11px 0 0; }
+/* Chat approval card: the gate for AI-requested commands and writes. */
+.pending-action { border: 1px solid rgba(242, 181, 98, .45); background: rgba(242, 181, 98, .07); border-radius: 8px; padding: 14px 15px; margin: 12px 0 4px; display: grid; gap: 11px; }
+.pending-heading { display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 13px; }
+.pending-heading svg { width: 15px; height: 15px; }
+.pending-command { margin: 0; padding: 10px 11px; border-radius: 5px; background: #11161d; color: var(--ink); font: 11px/1.6 var(--mono); white-space: pre-wrap; word-break: break-all; max-height: 190px; overflow: auto; }
+.pending-meta { color: var(--muted); font: 10px var(--mono); }
+.pending-meta code { color: var(--blue); }
+.pending-reason { display: block; color: var(--muted); font: 10px var(--mono); }
+.pending-reason .input-control { margin-top: 5px; }
+.pending-actions { display: flex; gap: 8px; justify-content: flex-end; }

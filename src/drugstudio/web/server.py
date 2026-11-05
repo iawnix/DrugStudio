@@ -93,6 +93,11 @@ class WebApplication:
         self._process_lock = threading.Lock()
         self._terminal_lock = threading.Lock()
         self._terminals: dict[str, dict] = {}
+        # Tool calls suspended waiting for a human decision. In memory on
+        # purpose: a pending request that does not survive a restart simply
+        # means the user asks again, which is safer than resuming one.
+        self._pending_actions: dict[str, dict] = {}
+        self._approval_lock = threading.Lock()
 
     # ----- scope resolution -------------------------------------------------
 
@@ -632,40 +637,89 @@ class WebApplication:
             raise ValueError("terminal session belongs to another project")
         return session
 
-    def chat(self, payload: dict, *, project_root: Path | None = None,
-             run_root: Path | None = None) -> dict:
+    # Tools that change something. These stop the turn and wait for a person,
+    # because a prompt saying "ask before destructive operations" is a
+    # suggestion to the model, not a control the user holds.
+    MUTATING_TOOLS = {"write_file", "run_command"}
+    TOOL_CALL_LIMIT = 8
+
+    def chat_context(self, run_root: Path) -> dict:
+        """A compact, factual summary of the run for the assistant.
+
+        Without this the model has to go fishing with list_files/read_file to
+        answer "what failed?", which is slow and often wrong. Everything here
+        comes from the manifest, so it cannot invent a stage or a score.
+        """
+        try:
+            manifest = self.manifest(run_root)
+        except (OSError, json.JSONDecodeError, FileNotFoundError):
+            return {}
+        stages = {}
+        for stage, result in (manifest.get("stage_results") or {}).items():
+            if not isinstance(result, dict):
+                continue
+            row = {"status": result.get("status")}
+            if result.get("error"):
+                row["error"] = str(result["error"])[:600]
+            if result.get("attempt"):
+                row["attempt"] = result["attempt"]
+            stages[stage] = row
+        pockets = []
+        for item in ((manifest.get("stage_results") or {}).get("pocket", {})
+                     .get("metadata", {}).get("candidates") or [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            pockets.append({"rank": item.get("rank"), "name": item.get("name"),
+                            "score": item.get("p2rank_score") or item.get("score"),
+                            "residues": len(item.get("residue_ids") or []),
+                            "selected": bool(item.get("selected")),
+                            "review_recommended": bool(item.get("human_review_recommended"))})
+        tasks = manifest.get("tasks") or []
+        scores = [task.get("best_pose", {}).get("affinity_kcal_mol")
+                  for task in tasks if isinstance(task, dict)]
+        scores = sorted(value for value in scores if isinstance(value, (int, float)))
+        values = parameters.load(run_root)
+        return {
+            "run_id": manifest.get("run_id"),
+            "run_status": manifest.get("status"),
+            "current_stage": manifest.get("current_node"),
+            "target": (manifest.get("target") or {}).get("target_id"),
+            "ligand_count": len(manifest.get("ligands") or []),
+            "stages": stages,
+            "pocket_candidates": pockets,
+            "docking_tasks": {"total": len(tasks),
+                              "succeeded": sum(1 for task in tasks
+                                               if isinstance(task, dict) and task.get("status") == "succeeded"),
+                              "best_kcal_mol": scores[0] if scores else None,
+                              "median_kcal_mol": scores[len(scores) // 2] if scores else None},
+            "failures": [_small_value(item) for item in (manifest.get("failures") or [])[-3:]],
+            "human_decisions": [{"stage": item.get("stage"), "action": item.get("action"),
+                                 "actor": item.get("actor"), "reason": item.get("reason")}
+                                for item in (manifest.get("human_decisions") or [])[-5:]
+                                if isinstance(item, dict)],
+            "changed_parameters": parameters.changed_from_default(values),
+        }
+
+    def _chat_model(self, payload: dict, run_root: Path, tools):
+        from langchain_openai import ChatOpenAI
         with self._llm_config_lock:
             config = dict(self._llm_config)
-        if not config["api_key"]:
-            raise RuntimeError("AI chat needs an API key; configure it in model settings")
-        project_root = project_root or self.default_project_root
-        run_root = run_root or self.default_run_root
-        project_name = project_root.name
-        try:
-            from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-            from langchain_core.tools import StructuredTool
-            from langchain_openai import ChatOpenAI
-        except ImportError as exc:
-            raise RuntimeError("AI chat requires the DrugStudio LLM dependencies") from exc
+        run_model = _public_model_info(run_root) or {}
+        requested_model = str(payload.get("model") or config["model"]
+                              or run_model.get("model") or "gpt-4.1-mini").strip()
+        if len(requested_model) > 160:
+            raise ValueError("model name is too long")
+        temperature = float(payload.get("temperature", 0.2))
+        if not 0 <= temperature <= 2:
+            raise ValueError("temperature must be between 0 and 2")
+        model = ChatOpenAI(model=requested_model,
+                           base_url=config["base_url"] or run_model.get("base_url") or None,
+                           api_key=config["api_key"], temperature=temperature,
+                           timeout=90, max_retries=1)
+        return model.bind_tools(tools, parallel_tool_calls=False)
 
-        history = payload.get("messages")
-        if not isinstance(history, list) or not history:
-            raise ValueError("messages must contain the conversation")
-        messages = [SystemMessage(content=(
-            f"You are the DrugStudio research workbench assistant. The active project is {project_name!r}. "
-            f"Project-relative file and command tools are rooted at {project_root}. "
-            "Use tools to inspect actual files or run commands before making claims. "
-            "Ask before destructive or expensive operations. Never expose credentials. "
-            "Summarize each tool action and its result clearly. Reply in the user's language, preferably Chinese when the user writes Chinese."
-        ))]
-        for item in history[-24:]:
-            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
-                continue
-            content = str(item.get("content") or "")
-            if len(content) > 20_000:
-                content = content[:20_000]
-            messages.append(HumanMessage(content=content) if item["role"] == "user" else AIMessage(content=content))
-        actions = []
+    def _chat_tools(self, project_root: Path, actions: list):
+        from langchain_core.tools import StructuredTool
 
         def list_files(path: str = "") -> str:
             """List files and directories at a project-relative path."""
@@ -676,50 +730,182 @@ class WebApplication:
             return self.read_project_file(path, root=project_root)["content"]
 
         def write_file(path: str, content: str) -> str:
-            """Write a UTF-8 file inside the active project."""
-            return json.dumps(self.write_project_file(path, content, root=project_root), ensure_ascii=False)
+            """Write a UTF-8 file inside the active project. Needs human approval."""
+            result = self.write_project_file(path, content, root=project_root)
+            actions.append({"tool": "write_file", "path": result["path"]})
+            return json.dumps(result, ensure_ascii=False)
 
         def run_command(command: str, cwd: str = "") -> str:
-            """Run a shell command in the active project and return stdout/stderr."""
+            """Run a shell command in the active project. Needs human approval."""
             result = self.run_project_command(command, cwd, redact_environment=True, root=project_root)
             actions.append({"tool": "run_command", "command": command, "returncode": result["returncode"]})
             return json.dumps(result, ensure_ascii=False)
 
-        tools = [StructuredTool.from_function(list_files), StructuredTool.from_function(read_file),
-                 StructuredTool.from_function(write_file), StructuredTool.from_function(run_command)]
-        tool_map = {tool.name: tool for tool in tools}
-        run_model = _public_model_info(run_root) or {}
-        requested_model = str(payload.get("model") or config["model"] or run_model.get("model") or "gpt-4.1-mini").strip()
-        if len(requested_model) > 160:
-            raise ValueError("model name is too long")
-        temperature = float(payload.get("temperature", 0.2))
-        if not 0 <= temperature <= 2:
-            raise ValueError("temperature must be between 0 and 2")
-        model = ChatOpenAI(model=requested_model,
-                           base_url=config["base_url"] or run_model.get("base_url") or None,
-                           api_key=config["api_key"],
-                           temperature=temperature,
-                           timeout=90, max_retries=1)
-        bound_model = model.bind_tools(tools, parallel_tool_calls=False)
-        for _ in range(8):
-            response = bound_model.invoke(messages)
-            messages.append(response)
-            calls = getattr(response, "tool_calls", []) or []
-            if not calls:
-                return {"reply": str(response.content), "actions": actions}
-            for call in calls:
-                tool = tool_map.get(call.get("name"))
+        return [StructuredTool.from_function(function) for function
+                in (list_files, read_file, write_file, run_command)]
+
+    def _chat_system_prompt(self, project_root: Path, run_root: Path) -> str:
+        context = self.chat_context(run_root)
+        return (
+            f"You are the DrugStudio research workbench assistant. The active project is "
+            f"{project_root.name!r} and project-relative file and command tools are rooted at "
+            f"{project_root}.\n\n"
+            "Current run state, taken from the run manifest:\n"
+            f"{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+            "Use that state to answer questions about stages, failures, pockets and scores "
+            "rather than searching the filesystem for what it already tells you. Read files "
+            "when you need detail it does not contain. Never invent a stage, score, structure "
+            "or chemical property; say what is missing instead.\n"
+            "Docking scores are engine-specific empirical scores, not binding affinities, and "
+            "a predicted pocket is not an established binding site. Say so when it matters.\n"
+            "write_file and run_command stop and wait for the user to approve them, so state "
+            "plainly what you intend to do and why before requesting one.\n"
+            "Never expose credentials. Reply in the user's language, preferring Chinese when "
+            "they write Chinese."
+        )
+
+    def _restore_messages(self, history: list):
+        from langchain_core.messages import AIMessage, HumanMessage
+        messages = []
+        for item in (history or [])[-24:]:
+            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+                continue
+            content = str(item.get("content") or "")[:20_000]
+            messages.append(HumanMessage(content=content) if item["role"] == "user"
+                            else AIMessage(content=content))
+        return messages
+
+    def _run_chat_loop(self, bound_model, messages, tool_map, actions, *, pending_calls=None,
+                       project_root: Path, run_root: Path, chat_id: str, payload: dict) -> dict:
+        """Drive the model/tool loop, suspending when a tool needs approval."""
+        from langchain_core.messages import ToolMessage
+        for _ in range(self.TOOL_CALL_LIMIT):
+            if pending_calls is None:
+                response = bound_model.invoke(messages)
+                messages.append(response)
+                calls = list(getattr(response, "tool_calls", []) or [])
+                if not calls:
+                    return {"reply": str(response.content), "actions": actions}
+            else:
+                calls, pending_calls = pending_calls, None
+            while calls:
+                call = calls.pop(0)
+                name = call.get("name")
+                if name in self.MUTATING_TOOLS:
+                    # Suspend the whole turn: the conversation so far, this
+                    # call and anything queued behind it wait for a decision.
+                    return self._suspend_for_approval(
+                        call=call, remaining=calls, messages=messages, actions=actions,
+                        project_root=project_root, run_root=run_root, chat_id=chat_id,
+                        payload=payload)
+                tool = tool_map.get(name)
                 if tool is None:
                     result = "Unknown tool"
                 else:
                     try:
                         result = tool.invoke(call.get("args", {}))
-                        if call["name"] != "run_command":
-                            actions.append({"tool": call["name"], "path": call.get("args", {}).get("path", "")})
+                        actions.append({"tool": name, "path": call.get("args", {}).get("path", "")})
                     except Exception as exc:
                         result = f"{type(exc).__name__}: {exc}"
                 messages.append(ToolMessage(content=str(result)[:80_000], tool_call_id=call["id"]))
-        return {"reply": "Reached the tool-call limit for one response. Continue with a follow-up.", "actions": actions}
+        return {"reply": "Reached the tool-call limit for one response. Continue with a follow-up.",
+                "actions": actions}
+
+    def _suspend_for_approval(self, *, call, remaining, messages, actions, project_root: Path,
+                              run_root: Path, chat_id: str, payload: dict) -> dict:
+        action_id = uuid.uuid4().hex
+        args = call.get("args") or {}
+        with self._approval_lock:
+            # Bound the table so a user who never answers cannot grow it
+            # without limit; the oldest pending request is the first to go.
+            while len(self._pending_actions) >= 32:
+                self._pending_actions.pop(next(iter(self._pending_actions)))
+            self._pending_actions[action_id] = {
+                "call": call, "remaining": remaining, "messages": messages, "actions": actions,
+                "project_root": project_root, "run_root": run_root, "chat_id": chat_id,
+                "payload": payload, "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        summary = {"action_id": action_id, "tool": call.get("name"),
+                   "command": str(args.get("command") or "")[:4000],
+                   "path": str(args.get("path") or "")[:1000],
+                   "cwd": str(args.get("cwd") or "")[:1000],
+                   "content_preview": str(args.get("content") or "")[:2000],
+                   "content_bytes": len(str(args.get("content") or "").encode("utf-8"))}
+        self.events_for(run_root).emit("chat_action_requested", status="waiting_approval",
+                                       tool=call.get("name"), action_id=action_id,
+                                       chat_id=chat_id or None)
+        return {"reply": "", "actions": actions, "pending": summary}
+
+    def resolve_chat_action(self, payload: dict) -> dict:
+        """Apply a human decision to a suspended tool call and resume."""
+        from langchain_core.messages import ToolMessage
+        action_id = str(payload.get("action_id") or "")
+        approved = bool(payload.get("approved"))
+        reason = str(payload.get("reason") or "").strip()[:2000]
+        with self._approval_lock:
+            state = self._pending_actions.pop(action_id, None)
+        if state is None:
+            raise ValueError("这个操作请求已失效，请重新提问")
+        call = state["call"]
+        run_root, project_root = state["run_root"], state["project_root"]
+        messages, actions = state["messages"], state["actions"]
+        tools = self._chat_tools(project_root, actions)
+        tool_map = {tool.name: tool for tool in tools}
+        if approved:
+            tool = tool_map.get(call.get("name"))
+            try:
+                result = tool.invoke(call.get("args", {})) if tool else "Unknown tool"
+            except Exception as exc:
+                result = f"{type(exc).__name__}: {exc}"
+        else:
+            # The model is told it was declined, in the user's words, so it
+            # can suggest something else rather than silently retrying.
+            result = ("The user declined this action."
+                      + (f" Reason: {reason}" if reason else "")
+                      + " Do not retry it; propose an alternative or ask what to do instead.")
+        messages.append(ToolMessage(content=str(result)[:80_000], tool_call_id=call["id"]))
+        self.events_for(run_root).emit(
+            "chat_action_decided", status="approved" if approved else "rejected",
+            tool=call.get("name"), action_id=action_id, reason=reason or None,
+            chat_id=state.get("chat_id") or None)
+        if not bool(payload.get("resume", True)):
+            # The caller only wanted the refusal on the record -- the user
+            # moved on and will not read a reply, so do not spend a model
+            # call producing one.
+            return {"reply": "", "actions": actions,
+                    "decided": {"action_id": action_id, "approved": approved}}
+        bound_model = self._chat_model(state["payload"], run_root, tools)
+        outcome = self._run_chat_loop(bound_model, messages, tool_map, actions,
+                                      pending_calls=state["remaining"],
+                                      project_root=project_root, run_root=run_root,
+                                      chat_id=state.get("chat_id", ""), payload=state["payload"])
+        outcome["decided"] = {"action_id": action_id, "approved": approved}
+        return outcome
+
+    def chat(self, payload: dict, *, project_root: Path | None = None,
+             run_root: Path | None = None) -> dict:
+        with self._llm_config_lock:
+            has_key = bool(self._llm_config["api_key"])
+        if not has_key:
+            raise RuntimeError("AI chat needs an API key; configure it in model settings")
+        project_root = project_root or self.default_project_root
+        run_root = run_root or self.default_run_root
+        try:
+            from langchain_core.messages import SystemMessage
+        except ImportError as exc:
+            raise RuntimeError("AI chat requires the DrugStudio LLM dependencies") from exc
+
+        history = payload.get("messages")
+        if not isinstance(history, list) or not history:
+            raise ValueError("messages must contain the conversation")
+        actions: list = []
+        tools = self._chat_tools(project_root, actions)
+        messages = [SystemMessage(content=self._chat_system_prompt(project_root, run_root))]
+        messages.extend(self._restore_messages(history))
+        bound_model = self._chat_model(payload, run_root, tools)
+        return self._run_chat_loop(bound_model, messages, {tool.name: tool for tool in tools},
+                                   actions, project_root=project_root, run_root=run_root,
+                                   chat_id=str(payload.get("chat_id") or ""), payload=payload)
 
     def manifest(self, run_root: Path | None = None) -> dict:
         root = run_root or self.default_run_root
@@ -1296,6 +1482,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/project/chat":
                 self._json(self.app.chat(payload, project_root=self._project_scope(payload),
                                          run_root=self._run_scope(payload)))
+            elif parsed.path == "/api/project/chat/decide":
+                self._json(self.app.resolve_chat_action(payload))
             elif parsed.path == "/api/continue":
                 self._json(self.app.start_workflow(payload, self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/control":

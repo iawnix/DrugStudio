@@ -953,39 +953,48 @@ class WebApplication:
         self.events_for(run_root).emit("pricing_updated", model=model, **rates)
         return self.cost_summary(run_root)
 
+    def _usage_from_traces(self, run_root: Path) -> dict[str, dict]:
+        """Fall back to the ReAct traces for runs that predate usage events."""
+        model_default = (_public_model_info(run_root) or {}).get("model", "unknown")
+        models: dict[str, dict] = {}
+        for trace in (run_root / "logs").glob("react-*.jsonl"):
+            try:
+                lines = trace.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("type") != "ai":
+                    continue
+                model = str(record.get("response_metadata", {}).get("model_name", model_default))
+                usage = record.get("usage_metadata") or {}
+                row = models.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0,
+                                                "reported_calls": 0, "estimated_usd": None})
+                row["calls"] += 1
+                prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
+                completion = usage.get("output_tokens", usage.get("completion_tokens"))
+                if prompt is None or completion is None:
+                    continue
+                row["reported_calls"] += 1
+                row["input_tokens"] += int(prompt)
+                row["output_tokens"] += int(completion)
+        return models
+
     def cost_summary(self, run_root: Path | None = None) -> dict:
         run_root = run_root or self.default_run_root
-        events = self.events_for(run_root).read_since(0, limit=100000)
-        usage_records = [event for event in events
-                         if event.get("type") == "model_finished" and event.get("status") == "completed"]
-        if not usage_records:
-            model_default = (_public_model_info(run_root) or {}).get("model", "unknown")
-            for trace in (run_root / "logs").glob("react-*.jsonl"):
-                try:
-                    for line in trace.read_text(encoding="utf-8").splitlines():
-                        record = json.loads(line)
-                        if record.get("type") == "ai":
-                            usage_records.append({"model": record.get("response_metadata", {}).get("model_name", model_default),
-                                                  "status": "completed", "usage": record.get("usage_metadata")})
-                except (OSError, json.JSONDecodeError):
-                    continue
+        # Token totals are folded in as events are appended, so this no longer
+        # re-parses events.jsonl on every /api/state.
+        models: dict[str, dict] = {model: {**row, "estimated_usd": None}
+                                   for model, row in self.events_for(run_root).usage_by_model().items()}
+        if not models:
+            models = self._usage_from_traces(run_root)
         try:
             pricing = json.loads((run_root / "inputs" / "model-pricing.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pricing = {}
-        models: dict[str, dict] = {}
-        for event in usage_records:
-            model = str(event.get("model") or "unknown")
-            usage = event.get("usage") or {}
-            prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
-            completion = usage.get("output_tokens", usage.get("completion_tokens"))
-            row = models.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0,
-                                            "reported_calls": 0, "estimated_usd": None})
-            row["calls"] += 1
-            if prompt is not None and completion is not None:
-                row["reported_calls"] += 1
-                row["input_tokens"] += int(prompt)
-                row["output_tokens"] += int(completion)
         for model, row in models.items():
             rate = pricing.get(model)
             if rate and row["reported_calls"] == row["calls"] and row["reported_calls"]:

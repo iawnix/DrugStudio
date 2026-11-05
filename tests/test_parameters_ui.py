@@ -139,12 +139,11 @@ class StageParametersPanel(harness.BrowserHarness):
         self.assertEqual(self.page.evaluate("document.activeElement.dataset.workflowStage"), "docking")
 
     def test_nothing_selected_says_so_rather_than_claiming_no_parameters(self):
-        # The base setup opens docking; explicitly clear selection to test the seam.
-        self.page.evaluate("window.__clearStageSelection = true")
+        # Reload without selecting a node; the parameter panel must distinguish
+        # this from a stage that simply has no tunable parameters.
         self.page.reload(wait_until="domcontentloaded")
         self.page.wait_for_timeout(900)
         self.open_workflow()
-        self.page.evaluate("document.querySelector('#workflow-node-title').textContent = '未选择节点'")
         self.assertIn("选择一个阶段", self.page.inner_text("#stage-parameters-fields"))
 
     def test_reset_restores_the_defaults_for_that_stage(self):

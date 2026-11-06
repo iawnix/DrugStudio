@@ -29,7 +29,9 @@ class P2RankPocketFinder:
         self.executable = (Path(executable).expanduser().resolve() if executable else
                            external_executable(
                                "DOCK_AGENT_P2RANK", ("prank",),
-                               ("p2rank/2.5.1/prank", "p2rank/bin/prank")))
+                               ("p2rank/2.5.1/prank", "p2rank/bin/prank",
+                                "/home/agent/soft/p2rank/2.5.1/prank",
+                                "/home/agent/soft/p2rank/bin/prank")))
         self.profile = profile
         self.box_size = float(box_size)
         self.timeout_seconds = timeout_seconds

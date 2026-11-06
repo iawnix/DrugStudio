@@ -41,5 +41,21 @@ export XLA_FLAGS="${XLA_FLAGS:---xla_gpu_enable_triton_gemm=false}"
 
 model_cif="$(find "$AF3_OUTPUT_DIR" -type f -name '*_model.cif' -print -quit)"
 test -n "$model_cif"
-"$AF3_PYTHON" -c 'import gemmi,sys; s=gemmi.read_structure(sys.argv[1]); s.write_pdb(sys.argv[2])' \
-  "$model_cif" "$AF3_OUTPUT_DIR/model.pdb"
+if "$AF3_PYTHON" -c 'import gemmi' >/dev/null 2>&1; then
+  "$AF3_PYTHON" -c 'import gemmi,sys; s=gemmi.read_structure(sys.argv[1]); s.write_pdb(sys.argv[2])' \
+    "$model_cif" "$AF3_OUTPUT_DIR/model.pdb"
+else
+  # The AF3 environment supplied by the upstream installation does not always
+  # include gemmi. Open Babel is an equivalent conversion fallback and is
+  # already part of the managed chemistry software on this host.
+  AF3_OBABEL="${AF3_OBABEL:-}"
+  if [[ -z "$AF3_OBABEL" && -x /home/agent/soft/schrodinger/2024-1/utilities/obabel ]]; then
+    AF3_OBABEL=/home/agent/soft/schrodinger/2024-1/utilities/obabel
+  fi
+  if [[ -z "$AF3_OBABEL" ]]; then
+    AF3_OBABEL="$(command -v obabel || true)"
+  fi
+  test -n "$AF3_OBABEL"
+  "$AF3_OBABEL" "$model_cif" -O "$AF3_OUTPUT_DIR/model.pdb"
+fi
+test -s "$AF3_OUTPUT_DIR/model.pdb"

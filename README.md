@@ -59,10 +59,20 @@ export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional compatible endpoi
 export DOCK_AGENT_MODEL="gpt-4.1-mini"              # optional
 export DOCK_AGENT_VINA_RUNNER="/path/to/autodock-vina/scripts/run_in_env.sh"
 export DOCK_AGENT_CHEMISTRY_RUNNER="/path/to/rdkit/scripts/run_in_env.sh"
+export DOCK_AGENT_XTB="/path/to/xtb"
 ```
 
 The key is not written to manifests. Never commit credentials or local model
 configuration.
+
+On this host, the managed tools under `/home/agent/soft` are discovered by
+default. Local AlphaFold 3 additionally uses
+`/home/agent/soft/alphafold3/activate_alphafold3_3.0.4.sh`, the model weights
+under `/home/agent/soft/alphafold3/models`, and the database directory from
+that activation script. It still requires a PBS GPU allocation, `AF3_GPU_ID`,
+and `AF3_TERMS_ACKNOWLEDGED=1` before a prediction is submitted.
+The bundled PBS wrapper uses `gemmi` when available and falls back to the
+managed Open Babel converter for AF3 mmCIF-to-PDB output conversion.
 
 ## Run
 

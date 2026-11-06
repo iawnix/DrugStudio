@@ -14,12 +14,19 @@ from ..contracts import ArtifactRef, LigandSpec
 from ..ports import LigandPreparer, ToolContext, ToolResult
 from ..storage import ArtifactStore
 from .chemistry_environment import chemistry_command
+from .tool_paths import external_executable
+
+
+XTB_EXECUTABLE = external_executable(
+    "DOCK_AGENT_XTB", ("xtb",), ("xtb/current/bin/xtb", "xtb/6.7.1/bin/xtb",
+                                  "/home/agent/soft/xtb/current/bin/xtb",
+                                  "/home/agent/soft/xtb/6.7.1/bin/xtb"))
 
 
 @dataclass
 class XTBConformerPreparer:
     store: ArtifactStore
-    xtb: Path = Path(os.environ.get("DOCK_AGENT_XTB", "xtb"))
+    xtb: Path = XTB_EXECUTABLE
     python_executable: Optional[Path] = None
     seed: int = 20261016
     opt_level: str = "tight"

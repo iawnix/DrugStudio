@@ -225,7 +225,12 @@ class LocalAlphaFold3Provider:
     def predict(self, target: TargetSpec, context: ToolContext) -> ToolResult:
         if not target.sequence:
             return ToolResult(status="unsupported", error="local AF3 requires target.sequence")
-        if not os.environ.get("AF3_ACTIVATE"):
+        af3_activate = os.environ.get("AF3_ACTIVATE")
+        if not af3_activate:
+            bundled_activate = Path("/home/agent/soft/alphafold3/activate_alphafold3_3.0.4.sh")
+            if bundled_activate.is_file():
+                af3_activate = str(bundled_activate)
+        if not af3_activate:
             return ToolResult(status="unsupported", error="set AF3_ACTIVATE to the local AF3 environment activation script")
         if not os.environ.get("AF3_GPU_ID"):
             return ToolResult(status="unsupported", error="set AF3_GPU_ID to the coordinated physical GPU index")
@@ -258,7 +263,7 @@ class LocalAlphaFold3Provider:
                 kind="alphafold3_terms_acknowledgement")
             env = {"AF3_INPUT_JSON": str(inp), "AF3_OUTPUT_DIR": str(output),
                    "AF3_RUN_DIR": str(root), "AF3_WORK_DIR": str(work),
-                   "AF3_ACTIVATE": os.environ["AF3_ACTIVATE"], "AF3_GPU_ID": os.environ["AF3_GPU_ID"]}
+                   "AF3_ACTIVATE": af3_activate, "AF3_GPU_ID": os.environ["AF3_GPU_ID"]}
             for key in ("AF3_FLASH_ATTENTION_IMPLEMENTATION", "AF3_NUM_DIFFUSION_SAMPLES", "AF3_NUM_RECYCLES",
                         "XLA_CLIENT_MEM_FRACTION"):
                 if os.environ.get(key):

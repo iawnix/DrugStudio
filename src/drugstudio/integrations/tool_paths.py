@@ -49,10 +49,6 @@ def external_executable(environment_variable: str, names: tuple[str, ...],
             return Path(found).resolve()
     source = Path(__file__).resolve()
     candidates = [parent / relative for parent in source.parents for relative in map(Path, relative_paths)]
-    candidates.extend(Path(path).expanduser() for path in (
-        "/home/agent/soft/p2rank/2.5.1/prank",
-        "/home/agent/soft/p2rank/bin/prank",
-    ))
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate.resolve()

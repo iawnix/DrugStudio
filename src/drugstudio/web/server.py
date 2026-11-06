@@ -46,6 +46,52 @@ from ..workbench import (
 
 
 STATIC_ROOT = Path(__file__).with_name("static")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WORKSPACE_ROOT = PROJECT_ROOT.parent
+
+MODULE_SETTING_DEFAULTS = {
+    "vina_runner": str(WORKSPACE_ROOT / "skill-development/autodock-vina/scripts/run_in_env.sh"),
+    "vina_binary": "/home/agent/soft/vina/current/.pixi/envs/default/bin/vina",
+    "chemistry_runner": str(WORKSPACE_ROOT / ".agents/skills/rdkit/scripts/run_in_env.sh"),
+    "receptor_prefix": str(PROJECT_ROOT / "environments/receptor/.venv"),
+    "xtb_binary": "/home/agent/soft/xtb/current/bin/xtb",
+    "p2rank_binary": "/home/agent/soft/p2rank/2.5.1/prank",
+    "java_home": "/home/agent/soft/java/17.0.19",
+    "af3_activate": "/home/agent/soft/alphafold3/activate_alphafold3_3.0.4.sh",
+    "af3_model_dir": "/home/agent/soft/alphafold3/models",
+    "af3_db_dir": "/home/hbc/alphafold3/dbs",
+    "af3_queue": "gpuq",
+    "af3_walltime": "12:00:00",
+    "af3_cpus": "8",
+    "af3_memory": "64gb",
+    "af3_gpu_count": "1",
+    "af3_gpu_id": "",
+    "af3_terms_acknowledged": "",
+    "af3_host": "",
+    "af3_qsub": "qsub",
+    "af3_qstat": "qstat",
+}
+MODULE_SETTING_GROUPS = {
+    "docking": ("Vina runner", "vina_runner", "vina_binary"),
+    "ligand": ("Chemistry runner / xTB", "chemistry_runner", "xtb_binary"),
+    "receptor": ("PDBFixer / OpenMM", "receptor_prefix"),
+    "pocket": ("P2Rank / Java", "p2rank_binary", "java_home"),
+    "alphafold": ("Local AlphaFold 3", "af3_activate", "af3_model_dir", "af3_db_dir",
+                  "af3_queue", "af3_walltime", "af3_cpus", "af3_memory", "af3_gpu_count",
+                  "af3_gpu_id", "af3_terms_acknowledged", "af3_host", "af3_qsub", "af3_qstat"),
+}
+MODULE_PATH_KEYS = {key for key in MODULE_SETTING_DEFAULTS if key.endswith(("_runner", "_binary", "_home", "_activate", "_dir", "_prefix"))}
+MODULE_COMMAND_KEYS = {"af3_qsub", "af3_qstat"}
+MODULE_SETTING_ENV = {
+    "vina_runner": "DOCK_AGENT_VINA_RUNNER", "vina_binary": "DOCK_AGENT_VINA_BINARY",
+    "chemistry_runner": "DOCK_AGENT_CHEMISTRY_RUNNER", "receptor_prefix": "DRUGSTUDIO_RECEPTOR_PREFIX",
+    "xtb_binary": "DOCK_AGENT_XTB", "p2rank_binary": "DOCK_AGENT_P2RANK", "java_home": "DOCK_AGENT_JAVA_HOME",
+    "af3_activate": "AF3_ACTIVATE", "af3_model_dir": "AF3_MODEL_DIR", "af3_db_dir": "AF3_DB_DIR",
+    "af3_queue": "AF3_PBS_QUEUE", "af3_walltime": "AF3_PBS_WALLTIME", "af3_cpus": "AF3_PBS_CPUS",
+    "af3_memory": "AF3_PBS_MEMORY", "af3_gpu_count": "AF3_PBS_GPU_COUNT", "af3_gpu_id": "AF3_GPU_ID",
+    "af3_terms_acknowledged": "AF3_TERMS_ACKNOWLEDGED", "af3_host": "AF3_PBS_HOST",
+    "af3_qsub": "AF3_QSUB", "af3_qstat": "AF3_QSTAT",
+}
 
 
 class WebApplication:
@@ -82,8 +128,10 @@ class WebApplication:
             "model": os.environ.get("DOCK_AGENT_MODEL", ""),
         }
         self._llm_config_lock = threading.Lock()
+        self._module_config_lock = threading.Lock()
         self._metadata_lock = threading.Lock()
         self.workbench_root = self.runs_root / ".workbench"
+        self.module_config_path = self.workbench_root / "module-settings.json"
         self.projects_index = self.workbench_root / "projects.json"
         self.default_project_root = self._initial_project_root()
         manifest_path = self.default_run_root / "manifest.json"
@@ -337,6 +385,62 @@ class WebApplication:
             elif payload.get("clear_api_key"):
                 self._llm_config["api_key"] = ""
         return self.model_config()
+
+    def module_config(self) -> dict:
+        """Return editable tool settings plus safe executable/directory checks."""
+        try:
+            saved = json.loads(self.module_config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            saved = {}
+        if not isinstance(saved, dict):
+            saved = {}
+        values = {}
+        for key, default in MODULE_SETTING_DEFAULTS.items():
+            if key in saved:
+                raw = saved[key]
+            else:
+                env_name = MODULE_SETTING_ENV.get(key, f"DOCK_AGENT_{key.upper()}")
+                raw = os.environ.get(env_name, default)
+            values[key] = str(raw or "")
+        checks = {}
+        for key, value in values.items():
+            if key in MODULE_COMMAND_KEYS:
+                executable = shutil.which(value) if value else None
+                checks[key] = {"ok": bool(executable), "detail": "可用" if executable else "命令未找到"}
+            elif key in {"af3_queue", "af3_walltime", "af3_memory", "af3_gpu_id", "af3_cpus", "af3_gpu_count"}:
+                checks[key] = {"ok": bool(value), "detail": "已设置" if value else "未设置"}
+            elif key in MODULE_PATH_KEYS:
+                path = Path(value).expanduser()
+                expected_directory = key.endswith(("_dir", "_home", "_prefix"))
+                available = path.is_dir() if expected_directory else path.is_file()
+                checks[key] = {"ok": available, "detail": "可用" if available else "路径不存在或类型不符"}
+            else:
+                checks[key] = {"ok": bool(value), "detail": "已设置" if value else "未设置"}
+        return {"values": values, "groups": {
+            name: {"label": item[0], "keys": list(item[1:])}
+            for name, item in MODULE_SETTING_GROUPS.items()
+        }, "checks": checks, "config_path": str(self.module_config_path)}
+
+    def update_module_config(self, payload: dict) -> dict:
+        incoming = payload.get("settings", payload)
+        if not isinstance(incoming, dict):
+            raise ValueError("settings must be an object")
+        unknown = set(incoming) - set(MODULE_SETTING_DEFAULTS)
+        if unknown:
+            raise ValueError(f"unknown module settings: {', '.join(sorted(unknown))}")
+        values = self.module_config()["values"]
+        for key, value in incoming.items():
+            text = str(value or "").strip()
+            if len(text) > 2048:
+                raise ValueError(f"module setting is too long: {key}")
+            values[key] = text
+        for key in ("af3_cpus", "af3_gpu_count"):
+            if values[key] and (not values[key].isdigit() or int(values[key]) < 1):
+                raise ValueError(f"{key} must be a positive integer")
+        self.module_config_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._module_config_lock:
+            atomic_json_write(self.module_config_path, values)
+        return self.module_config()
 
     def _project_for_id(self, project_id: str) -> Path:
         source = self.workspace_root if project_id in {"", "."} else self.workspace_root / project_id
@@ -931,7 +1035,7 @@ class WebApplication:
         """Keep project tools available without borrowing another project's run."""
         config = self.model_config(use_default=False)
         return {
-            "project": self.project_identity(project_root),
+            "project": self.project_identity(project_root), "module_config": self.module_config(),
             "chat_available": config["api_key_configured"], "model_config": config,
             "run_key": "", "run_id": None, "run_meta": None, "status": "idle",
             "current_node": None, "target": {}, "ligands": [], "policy": {},
@@ -966,6 +1070,7 @@ class WebApplication:
         model_config = self.model_config(run_root)
         return {
             "project": self.project_identity(project_root),
+            "module_config": self.module_config(),
             "chat_available": model_config["api_key_configured"],
             "model_config": model_config,
             "run_key": self.run_key(run_root),
@@ -1337,6 +1442,29 @@ class WebApplication:
                     environment["OPENAI_BASE_URL"] = self._llm_config["base_url"]
                 if self._llm_config["model"]:
                     environment["DOCK_AGENT_MODEL"] = self._llm_config["model"]
+            module_values = self.module_config()["values"]
+            environment.update({
+                "DOCK_AGENT_VINA_RUNNER": module_values["vina_runner"],
+                "DOCK_AGENT_VINA_BINARY": module_values["vina_binary"],
+                "DOCK_AGENT_CHEMISTRY_RUNNER": module_values["chemistry_runner"],
+                "DRUGSTUDIO_RECEPTOR_PREFIX": module_values["receptor_prefix"],
+                "DOCK_AGENT_XTB": module_values["xtb_binary"],
+                "DOCK_AGENT_P2RANK": module_values["p2rank_binary"],
+                "DOCK_AGENT_JAVA_HOME": module_values["java_home"],
+                "AF3_ACTIVATE": module_values["af3_activate"],
+                "AF3_MODEL_DIR": module_values["af3_model_dir"],
+                "AF3_DB_DIR": module_values["af3_db_dir"],
+                "AF3_PBS_QUEUE": module_values["af3_queue"],
+                "AF3_PBS_WALLTIME": module_values["af3_walltime"],
+                "AF3_PBS_CPUS": module_values["af3_cpus"],
+                "AF3_PBS_MEMORY": module_values["af3_memory"],
+                "AF3_PBS_GPU_COUNT": module_values["af3_gpu_count"],
+                "AF3_GPU_ID": module_values["af3_gpu_id"],
+                "AF3_TERMS_ACKNOWLEDGED": module_values["af3_terms_acknowledged"],
+                "AF3_PBS_HOST": module_values["af3_host"],
+                "AF3_QSUB": module_values["af3_qsub"],
+                "AF3_QSTAT": module_values["af3_qstat"],
+            })
             if not environment.get("OPENAI_BASE_URL") and model_info.get("base_url"):
                 environment["OPENAI_BASE_URL"] = str(model_info["base_url"])
             try:
@@ -1463,6 +1591,8 @@ class Handler(BaseHTTPRequestHandler):
                            else self.app.empty_snapshot(project_root))
             elif parsed.path == "/api/model-config":
                 self._json(self.app.model_config(self._run_scope(query, required=False), use_default=False))
+            elif parsed.path == "/api/module-config":
+                self._json(self.app.module_config())
             elif parsed.path == "/api/runs":
                 self._json({"runs": self.app.list_runs(query.get("project_id", [""])[0],
                                                        self._run_scope(query, required=False))})
@@ -1525,6 +1655,8 @@ class Handler(BaseHTTPRequestHandler):
                 run_root = self._run_scope(payload, required=False)
                 self.app.update_model_config(payload)
                 self._json(self.app.model_config(run_root, use_default=False))
+            elif parsed.path == "/api/module-config":
+                self._json(self.app.update_module_config(payload))
             elif parsed.path == "/api/chats":
                 self._json(self.app.create_chat(str(payload.get("project_id") or "")), status=HTTPStatus.CREATED)
             elif parsed.path == "/api/chats/save":

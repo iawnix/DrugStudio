@@ -105,6 +105,24 @@ the upstream artifact chain for a selected result.
 The server can also start with an empty `--runs-root`; create projects and
 conversations first, then initialize the first run with `drugstudio init`.
 
+### Module settings
+
+Open **设置** in the workbench to inspect and change the scientific tool
+environment used by new workflow processes. The page covers Vina, the
+PDBFixer/OpenMM environment, RDKit/Meeko and xTB, P2Rank/Java, and local
+AlphaFold 3/PBS paths and resource requests. Each value is checked on the
+server before it is shown as available. Settings are stored at
+`<runs-root>/.workbench/module-settings.json` and are injected only when a new
+workflow process starts; changing them does not alter a running job or any
+historical manifest.
+
+The model endpoint and API key remain in **模型连接**. API keys are kept in
+the server process and are never copied into module settings, manifests, or
+run logs. AlphaFold 3 terms acknowledgement is an explicit setting and is
+off by default; a GPU allocation and valid PBS commands are still required.
+The same configuration is available to integrations through `GET` and `POST`
+`/api/module-config`.
+
 ### Run parameters
 
 The editable scientific parameters and validation rules live in

@@ -93,6 +93,27 @@ class WebRegressions(unittest.TestCase):
         self.assertNotEqual(state["model_config"]["model"], "alpha-model")
         self.assertEqual(self.request("/api/model-config?project_id=empty")[2]["base_url"], "")
 
+    def test_module_config_is_available_without_a_run(self):
+        status, _, data = self.request("/api/module-config?project_id=empty")
+        self.assertEqual(status, 200)
+        self.assertIn("vina_runner", data["values"])
+        self.assertIn("alphafold", data["groups"])
+        self.assertIn("af3_model_dir", data["checks"])
+        state = self.request("/api/state?project_id=empty")[2]
+        self.assertEqual(state["module_config"]["values"]["xtb_binary"], data["values"]["xtb_binary"])
+
+    def test_module_config_can_be_saved_and_rejects_unknown_or_invalid_values(self):
+        status, _, data = self.request("/api/module-config", {"settings": {"af3_queue": "testq", "af3_cpus": "4"}})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["values"]["af3_queue"], "testq")
+        self.assertEqual(data["values"]["af3_cpus"], "4")
+        status, _, error = self.request("/api/module-config", {"settings": {"unknown": "secret"}})
+        self.assertEqual(status, 400)
+        self.assertIn("unknown module settings", error["error"])
+        status, _, error = self.request("/api/module-config", {"settings": {"af3_cpus": "0"}})
+        self.assertEqual(status, 400)
+        self.assertIn("positive integer", error["error"])
+
     def test_run_lists_are_filtered_including_empty_project(self):
         for project in ("alpha", "beta", "empty"):
             status, _, data = self.request(f"/api/runs?project_id={project}")

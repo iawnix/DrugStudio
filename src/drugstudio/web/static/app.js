@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, codeEditor: null, runKey: "",
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, moduleConfig: null, codeEditor: null, runKey: "",
     boxVisible: false, boxShapes: [], structureAtoms: [],
     structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null,
     parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false,
@@ -87,6 +87,7 @@
     await fetchRuns();
     await fetchState();
     await fetchModelConfig();
+    await fetchModuleConfig();
     renderChat();
   }
 
@@ -141,6 +142,86 @@
     } catch (_) {
       setModelConfigStatus(Boolean(app.state?.chat_available), app.state?.model?.base_url || "");
     }
+  }
+
+  const moduleSettingLabels = {
+    vina_runner: ["Vina runner", "运行 AutoDock Vina 的封装脚本"],
+    vina_binary: ["Vina 可执行文件", "用于检查和兜底调用的 Vina 路径"],
+    chemistry_runner: ["化学工具 runner", "RDKit / Meeko 的环境封装脚本"],
+    receptor_prefix: ["PDBFixer 环境", "包含 PDBFixer / OpenMM 的 Python 环境"],
+    xtb_binary: ["xTB 可执行文件", "小分子构象优化使用的 xTB"],
+    p2rank_binary: ["P2Rank prank", "口袋发现程序"],
+    java_home: ["Java HOME", "P2Rank 使用的 Java 运行时目录"],
+    af3_activate: ["AF3 激活脚本", "本地 AlphaFold 3 环境激活脚本"],
+    af3_model_dir: ["AF3 模型目录", "AlphaFold 3 权重目录"],
+    af3_db_dir: ["AF3 数据库目录", "AlphaFold 3 数据库根目录"],
+    af3_queue: ["PBS 队列", "提交本地 AF3 任务的队列"],
+    af3_walltime: ["PBS walltime", "例如 12:00:00"],
+    af3_cpus: ["CPU 核数", "AF3 PBS 任务申请的 CPU 数"],
+    af3_memory: ["内存", "例如 64gb"],
+    af3_gpu_count: ["GPU 数量", "AF3 PBS 任务申请的 GPU 数"],
+    af3_gpu_id: ["GPU ID", "节点上的物理 GPU 编号；留空则由调度器决定"],
+    af3_terms_acknowledged: ["AF3 条款确认", "确认本机 AlphaFold 3 模型条款适用于本次运行"],
+    af3_host: ["PBS host", "可选的远端 PBS 主机"],
+    af3_qsub: ["qsub", "PBS 提交命令"],
+    af3_qstat: ["qstat", "PBS 状态查询命令"]
+  };
+
+  async function fetchModuleConfig() {
+    try {
+      const response = await fetch(scoped("/api/module-config"), { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      app.moduleConfig = data;
+      renderModuleConfig();
+    } catch (error) {
+      $("module-config-status").textContent = `模块配置读取失败：${error.message}`;
+      $("module-config-dot").classList.add("offline");
+    }
+  }
+
+  function renderModuleConfig() {
+    const config = app.moduleConfig;
+    if (!config) return;
+    const checks = config.checks || {};
+    const groups = config.groups || {};
+    const values = config.values || {};
+    const groupHtml = Object.entries(groups).map(([name, group]) => {
+      const fields = (group.keys || []).map((key) => {
+        const meta = moduleSettingLabels[key] || [key, ""];
+        const check = checks[key] || {};
+        const isCheckbox = key === "af3_terms_acknowledged";
+        const inputType = isCheckbox ? "checkbox" : (["af3_cpus", "af3_gpu_count"].includes(key) ? "number" : "text");
+        const status = check.ok ? "可用" : (check.detail || "待检查");
+        const checkbox = isCheckbox ? (values[key] === "1" || values[key] === "yes" || values[key] === "true" ? " checked" : "") : "";
+        const value = isCheckbox ? "1" : esc(values[key] || "");
+        return `<label class="module-setting-field ${isCheckbox ? "checkbox-setting" : ""}"><span><strong>${esc(meta[0])}</strong><small>${esc(meta[1])}</small></span><input class="input-control" data-module-key="${esc(key)}" type="${inputType}" ${inputType === "number" ? "min=\"1\" step=\"1\"" : ""}${checkbox} value="${value}" autocomplete="off"><em class="module-setting-check ${check.ok ? "ok" : "bad"}" data-module-check="${esc(key)}">${esc(status)}</em></label>`;
+      }).join("");
+      return `<section class="panel module-settings-group"><div class="panel-heading"><div><div class="eyebrow">MODULE</div><h2>${esc(group.label || name)}</h2></div><span class="mono muted">${(group.keys || []).length} 项</span></div><div class="module-settings-fields">${fields}</div></section>`;
+    }).join("");
+    $("module-settings-groups").innerHTML = groupHtml || `<div class="empty-state">没有可配置模块。</div>`;
+    const allChecks = Object.values(checks);
+    const healthy = allChecks.length > 0 && allChecks.every((item) => item.ok);
+    $("module-config-dot").classList.toggle("offline", !healthy);
+    $("module-config-status").textContent = healthy ? "模块环境检查通过" : `${allChecks.filter((item) => item.ok).length}/${allChecks.length} 项配置可用`;
+    $("module-config-path").textContent = config.config_path || "";
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  async function saveModuleConfig() {
+    const button = $("save-module-settings");
+    const settings = {};
+    document.querySelectorAll("[data-module-key]").forEach((input) => { settings[input.dataset.moduleKey] = input.type === "checkbox" ? (input.checked ? "1" : "") : input.value.trim(); });
+    button.disabled = true;
+    try {
+      const response = await postJson("/api/module-config", { settings });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      app.moduleConfig = data;
+      renderModuleConfig();
+      toast("模块设置已保存；新运行将使用最新配置");
+    } catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; }
   }
 
   function setModelConfigStatus(configured, baseUrl = "") {
@@ -204,6 +285,10 @@
       const state = await response.json();
       if (projectId !== app.projectId || runKey !== app.runKey) return;
       app.state = state;
+      if (state.module_config) {
+        app.moduleConfig = state.module_config;
+        if (document.querySelector("#view-settings.active")) renderModuleConfig();
+      }
       app.runKey = state.run_key || "";
       if (!app.runKey) {
         app.eventSource?.close(); app.eventSource = null; app.events = [];
@@ -1854,6 +1939,8 @@
       loadStructureCoordinates();
     } else if (viewName === "files") {
       refreshProjectFiles();
+    } else if (viewName === "settings") {
+      if (!app.moduleConfig) fetchModuleConfig(); else renderModuleConfig();
     }
   }
 
@@ -1872,6 +1959,9 @@
     $("close-terminal").addEventListener("click", closeTerminalDock);
     $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.boxShapes = []; drawDockingBox(); fitProteinView(); } });
     $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt(t("新文件名（相对项目根目录）")); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
+    $("save-module-settings").addEventListener("click", saveModuleConfig);
+    $("refresh-module-settings").addEventListener("click", fetchModuleConfig);
+    $("open-model-settings-from-modules").addEventListener("click", () => { $("model-settings-dialog").showModal(); if (!app.modelConfig) fetchModelConfig(); });
     $("chat-model").addEventListener("change", (event) => localStorage.setItem("dock-agent-chat-model", event.target.value.trim()));
     $("open-model-settings").addEventListener("click", () => {
       $("model-settings-dialog").showModal();

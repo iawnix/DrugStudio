@@ -113,7 +113,7 @@ html, body { background: var(--bg); color: var(--ink); }
 body { transition: background-color .2s ease, color .2s ease; }
 .topbar { height: 72px; padding: 0 clamp(18px, 4vw, 58px); background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 rgba(0,0,0,.02); }
 .brand-lockup { gap: 11px; }.brand { color: var(--ink); letter-spacing: .11em; }.brand-sub { color: var(--muted); }
-.brand-mark { height: 25px; }.brand-mark span { border-radius: 3px; }.brand-mark span:nth-child(1) { background: var(--blue); }.brand-mark span:nth-child(2) { background: var(--teal); }.brand-mark span:nth-child(3) { background: var(--amber); }
+.brand-logo { display: block; width: 40px; height: 40px; flex: 0 0 40px; object-fit: contain; }
 .top-actions { gap: 8px; color: var(--muted); }.connection-status { display: inline-flex; align-items: center; gap: 7px; margin-right: 4px; font: 10px var(--mono); }
 .top-control { min-height: 34px; border: 1px solid transparent; border-radius: 10px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted); background: transparent; font: 600 11px var(--sans); transition: .18s ease; }
 .top-control:hover { color: var(--ink); border-color: var(--line); background: var(--surface-2); }.top-control svg { width: 16px; height: 16px; }.language-toggle { min-width: 42px; font-family: var(--mono); }

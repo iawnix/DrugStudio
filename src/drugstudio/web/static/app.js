@@ -3,7 +3,7 @@
   "use strict";
 
   const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, moduleConfig: null, codeEditor: null, runKey: "",
-    boxVisible: false, boxShapes: [], structureAtoms: [],
+    boxVisible: false, boxShapes: [], pocketLabel: null, structureAtoms: [],
     structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null,
     parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false,
     workflowBuilt: false, stagePickedByUser: false, pendingAction: null };
@@ -32,14 +32,46 @@
     [app.proteinViewer, app.ligandViewer].forEach((viewer) => {
       if (viewer) { viewer.setBackgroundColor(background); viewer.render(); }
     });
+    if (app.proteinViewer) {
+      updatePocketLabel(app.selectedPocket);
+      drawDockingBox();
+    }
     if (app.terminal) app.terminal.options.theme = terminalTheme();
   }
 
   function terminalTheme() {
     const palette = getComputedStyle(document.documentElement);
-    return { background: palette.getPropertyValue("--surface-2").trim(),
-      foreground: palette.getPropertyValue("--ink").trim(),
-      cursor: palette.getPropertyValue("--blue").trim(), selectionBackground: "#689df855" };
+    const color = (name) => palette.getPropertyValue(name).trim();
+    // xterm defaults are intended for a black terminal. Supply the entire ANSI
+    // palette so colored shell output stays legible on both surfaces.
+    return { background: color("--surface-2"), foreground: color("--ink"),
+      cursor: color("--blue"), cursorAccent: color("--surface-2"),
+      selectionBackground: color("--blue") + "44",
+      black: color("--ansi-black"), brightBlack: color("--ansi-bright-black"),
+      white: color("--ansi-white"), brightWhite: color("--ansi-bright-white"),
+      red: color("--coral"), brightRed: color("--coral"),
+      green: color("--lime"), brightGreen: color("--lime"),
+      yellow: color("--amber"), brightYellow: color("--amber"),
+      blue: color("--blue"), brightBlue: color("--blue"),
+      magenta: color("--purple"), brightMagenta: color("--purple"),
+      cyan: color("--teal"), brightCyan: color("--teal") };
+  }
+
+  function updatePocketLabel(pocket) {
+    const viewer = app.proteinViewer;
+    if (!viewer) return;
+    if (app.pocketLabel) viewer.removeLabel(app.pocketLabel);
+    app.pocketLabel = null;
+    const center = pocket?.box?.center || pocket?.center;
+    if (center?.length === 3) {
+      const palette = getComputedStyle(document.documentElement);
+      app.pocketLabel = viewer.addLabel(`Pocket ${pocket.rank}`, {
+        position: { x: center[0], y: center[1], z: center[2] },
+        backgroundColor: palette.getPropertyValue("--viewer-label-bg").trim(),
+        fontColor: palette.getPropertyValue("--viewer-label-ink").trim(),
+        fontSize: 11, inFront: true
+      });
+    }
   }
 
   function refreshLanguage() {
@@ -1042,6 +1074,7 @@
     app.terminal = new window.Terminal({
       allowProposedApi: false, convertEol: true, cursorBlink: true,
       fontFamily: '"DM Mono", monospace', fontSize: 12, scrollback: 3000,
+      minimumContrastRatio: 4.5,
       theme: terminalTheme()
     });
     app.terminalFit = new window.FitAddon.FitAddon();
@@ -1549,7 +1582,7 @@
       app.proteinViewer?.clear?.();
       $("protein-viewer").innerHTML = "";
       const viewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--surface-2").trim(), antialias: true });
-      app.proteinViewer = viewer; app.boxShapes = [];
+      app.proteinViewer = viewer; app.boxShapes = []; app.pocketLabel = null;
       viewer.addModel(text, "pdb");
       setProteinStyle("cartoon");
       await addPoseOverlay(viewer);
@@ -1608,6 +1641,7 @@
     try {
       app.proteinViewer.removeAllSurfaces?.();
       app.proteinViewer.removeAllShapes(); app.boxShapes = [];
+      updatePocketLabel(app.selectedPocket);
       app.proteinViewer.setStyle(protein, {});
       if (style === "site") {
         app.proteinViewer.setStyle(protein, { cartoon: { color: "#b8c1c5", opacity: 0.22 } });
@@ -1622,7 +1656,6 @@
           const center = app.selectedPocket.box?.center || app.selectedPocket.center;
           if (center?.length === 3) {
             app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.2, color: "#f2b562", alpha: 0.35 } });
-            app.proteinViewer.addLabel(`Pocket ${app.selectedPocket.rank}`, { position: { x: center[0], y: center[1], z: center[2] }, backgroundColor: "#fff7e9", fontColor: "#bd7a1f", fontSize: 11, inFront: true });
           }
         }
         const focus = siteSelections.length === 1 ? siteSelections[0] : { or: siteSelections };
@@ -1703,8 +1736,9 @@
       edges.push([at(a, 0, b), at(a, 1, b)]);
       edges.push([at(a, b, 0), at(a, b, 1)]);
     }));
+    const color = getComputedStyle(document.documentElement).getPropertyValue("--blue").trim();
     edges.forEach(([start, end]) => {
-      app.boxShapes.push(app.proteinViewer.addLine({ start, end, color: "#4d8df6", linewidth: 2 }));
+      app.boxShapes.push(app.proteinViewer.addLine({ start, end, color, linewidth: 2 }));
     });
     app.proteinViewer.render();
   }
@@ -1812,10 +1846,10 @@
   function showPocket(pocket) {
     if (!app.proteinViewer || !pocket) return;
     app.proteinViewer.removeAllShapes();
+    updatePocketLabel(pocket);
     const center = pocket.box?.center || pocket.center;
     if (center?.length === 3) {
       app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.6, color: "#f2b562", alpha: .9 } });
-      app.proteinViewer.addLabel(`Pocket ${pocket.rank}`, { position: { x: center[0], y: center[1], z: center[2] }, backgroundColor: "#fff7e9", fontColor: "#bd7a1f", fontSize: 11, inFront: true });
     }
     const selections = (pocket.residue_ids || []).map((value) => {
       const match = String(value).match(/^([A-Za-z0-9])[: ]?(\d+)/); return match ? { chain: match[1], resi: Number(match[2]) } : null;

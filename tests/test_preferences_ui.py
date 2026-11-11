@@ -89,3 +89,46 @@ class PresentationPreferences(harness.BrowserHarness):
         self.page.click('#view-results [data-close-drawer]')
         self.assertTrue(self.page.is_visible('#chat-input'))
         self.assertEqual(self.page.eval_on_selector('.chat-composer-shell', 'el => getComputedStyle(el).backgroundColor'), 'rgb(255, 255, 255)')
+
+    def test_theme_contrast_in_model_dialog_and_selected_file(self):
+        # Regression: dark mode inherited a white URL field and white file
+        # selection from the old light-only component rules.
+        self.page.click('[data-view="files"]')
+        self.page.locator('.file-entry').first.wait_for()
+        self.page.locator('.file-entry').first.evaluate("el => el.classList.add('selected')")
+        self.page.click('#view-files [data-close-drawer]')
+        for theme in ('light', 'dark'):
+            self.page.select_option('#theme-selector', theme)
+            self.page.click('#open-model-settings')
+            self.assert_readable('#model-base-url', theme)
+            self.page.click('[data-close-model-settings]')
+            self.page.click('[data-view="files"]')
+            self.page.locator('.file-entry').first.evaluate("el => el.classList.add('selected')")
+            self.page.locator('.file-entry.selected').first.hover()
+            self.assert_readable('.file-entry.selected', theme)
+            self.page.click('#view-files [data-close-drawer]')
+            self.page.locator('.chat-list-row').first.hover()
+            self.assert_readable('.chat-list-item.active', theme)
+            self.page.click('[data-view="results"]')
+            for i in range(4):
+                self.assert_readable(f'.metric:nth-child({i + 1}) .metric-icon', theme, minimum=3)
+            self.page.click('#view-results [data-close-drawer]')
+
+    def assert_readable(self, selector, theme, minimum=4.5):
+        result = self.page.locator(selector).first.evaluate('''el => {
+          const style = getComputedStyle(el);
+          const ctx = document.createElement('canvas').getContext('2d');
+          const rgb = color => {
+            ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1);
+            return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+          };
+          const luminance = c => c.map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
+            .reduce((s, v, i) => s + v * [.2126, .7152, .0722][i], 0);
+          const fg = luminance(rgb(style.color)), bg = luminance(rgb(style.backgroundColor));
+          return {contrast: (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05), bg};
+        }''')
+        self.assertGreaterEqual(result['contrast'], minimum, f'{theme}: {selector}: {result}')
+        if theme == 'dark':
+            self.assertLess(result['bg'], .15, f'Unexpected light surface: {selector}')
+        else:
+            self.assertGreater(result['bg'], .7, f'Unexpected dark surface: {selector}')

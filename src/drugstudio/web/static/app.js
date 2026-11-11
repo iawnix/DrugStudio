@@ -25,6 +25,7 @@
     toml: ["toml", "toml", "TOML"], ini: ["properties", "text/x-properties", "INI"], conf: ["properties", "text/x-properties", "Config"]
   };
   const t = window.DrugStudioUI.t;
+  const busy = (id, action) => window.DrugStudioControls.busy(document.getElementById(id), action);
 
   function refreshAppearance() {
     const palette = getComputedStyle(document.documentElement);
@@ -287,7 +288,7 @@
     $("module-config-dot").classList.toggle("offline", !healthy);
     $("module-config-status").textContent = healthy ? t("模块环境检查通过") : t("{p0}/{p1} 项配置可用", { p0: allChecks.filter((item) => item.ok).length, p1: allChecks.length });
     $("module-config-path").textContent = config.config_path || "";
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
   }
 
   async function saveModuleConfig() {
@@ -441,7 +442,7 @@
     renderLigandChoices();
     renderResults();
     renderReview();
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
     if (!app.proteinViewer && document.querySelector("#view-structure.active")) loadProtein();
     if (document.querySelector("#view-review.active")) loadStructureCoordinates();
   }
@@ -587,7 +588,7 @@
       selectWorkflowStage(node.dataset.workflowStage);
     });
     app.workflowBuilt = true;
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
   }
 
   // A click is a deliberate choice; the automatic follow must not override it.
@@ -661,7 +662,7 @@
     $("workflow-stage-summary").textContent = active ? `${t(active[1])} · ${stageStatusLabel(stageStatus(active[0]))}` : app.state.status === "succeeded" ? t("全部阶段已完成") : app.state.status === "failed" ? t("运行失败，需要处理") : t("等待开始");
     renderWorkflowLineage(); renderEventList(); renderRunFacts();
     renderCosts();
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
   }
 
   // ---- stage parameters --------------------------------------------------
@@ -773,7 +774,7 @@
     $("save-parameters").disabled = app.parameterSaving;
     $("reset-parameters").disabled = app.parameterSaving;
     renderParameterNote();
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
   }
 
   function pendingParameterKeys() {
@@ -1041,7 +1042,7 @@
       if (data.truncated) $("file-tree").insertAdjacentHTML("afterbegin", `<div class="file-list-note">${esc(t("仅显示前 500 项"))}</div>`);
       $("file-tree").querySelectorAll("[data-file-kind]:not(:disabled)").forEach((button) => button.addEventListener("click", () => button.dataset.fileKind === "directory" ? openProjectDirectory(button.dataset.filePath) : openProjectFile(button.dataset.filePath)));
       $("file-tree").querySelector("[data-file-parent]")?.addEventListener("click", () => openProjectDirectory(app.fileDirectory.split("/").slice(0, -1).join("/")));
-      if (window.lucide) window.lucide.createIcons();
+      window.DrugStudioControls.icons();
     } catch (error) { $("file-tree").innerHTML = `<div class="empty-state">${esc(error.message)}</div>`; }
   }
 
@@ -1259,7 +1260,7 @@
 
   function renderChatList() {
     const list = $("chat-list");
-    document.querySelectorAll("[data-chat-filter]").forEach((button) => button.classList.toggle("active", button.dataset.chatFilter === app.chatFilter));
+    document.querySelectorAll("[data-chat-filter]").forEach((button) => { button.classList.toggle("active", button.dataset.chatFilter === app.chatFilter); button.setAttribute("aria-pressed",String(button.dataset.chatFilter === app.chatFilter)); });
     const rows = app.chatSessions.filter((chat) => app.chatFilter === "archived" ? Boolean(chat.archived_at) : !chat.archived_at);
     list.innerHTML = rows.length ? rows.map((chat) =>
       `<div class="chat-list-row"><button type="button" class="chat-list-item ${chat.chat_id === app.chatId ? "active" : ""}" data-chat-id="${esc(chat.chat_id)}" title="${esc(chatTitle(chat))}"><i data-lucide="message-square"></i><span>${esc(chatTitle(chat))}</span></button><button type="button" class="chat-archive-button" data-chat-archive="${esc(chat.chat_id)}" title="${chat.archived_at ? t("恢复对话") : t("归档对话")}" aria-label="${chat.archived_at ? t("恢复对话") : t("归档对话")}"><i data-lucide="${chat.archived_at ? "archive-restore" : "archive"}"></i></button></div>`).join("") :
@@ -1270,7 +1271,7 @@
       const chat = app.chatSessions.find((item) => item.chat_id === button.dataset.chatArchive);
       updateChatArchive(button.dataset.chatArchive, !chat?.archived_at);
     }));
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
     const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
     $("project-title").textContent = chatTitle(current);
   }
@@ -1398,7 +1399,7 @@
       if ($('pending-reason')) $('pending-reason').value = reason;
       $('approve-action')?.addEventListener('click', () => decideChatAction(true));
       $('reject-action')?.addEventListener('click', () => decideChatAction(false));
-      if (window.lucide) window.lucide.createIcons();
+      window.DrugStudioControls.icons();
     }
     container.scrollTop = follow ? container.scrollHeight : previousTop;
     updateChatJump();
@@ -1439,7 +1440,7 @@
   function beginChatTurn() {
     const turn = { key: chatKey(), projectId: app.projectId, runKey: app.runKey,
       chatId: app.chatId, history: app.chatHistory, preview: '', timer: null };
-    app.chatTurn = turn; app.chatBusy = true; $('send-chat').disabled = true;
+    app.chatTurn = turn; app.chatBusy = true; $('send-chat').disabled = true; $('send-chat').setAttribute('aria-busy','true');
     return turn;
   }
 
@@ -1492,7 +1493,7 @@
   async function finishChatTurn(turn) {
     if (turn.timer !== null) window.clearTimeout(turn.timer);
     turn.preview = '';
-    if (app.chatTurn === turn) { app.chatTurn = null; app.chatBusy = false; $('send-chat').disabled = false; }
+    if (app.chatTurn === turn) { app.chatTurn = null; app.chatBusy = false; $('send-chat').disabled = false; $('send-chat').removeAttribute('aria-busy'); }
     renderChatStatus();
     try { await persistChat(turn); } catch (error) { toast(error.message, true); }
     if (chatKey() === turn.key) { app.chatHistory = turn.history; renderChat(); }
@@ -1811,7 +1812,7 @@
   }
 
   function bindMolecularControls() {
-    const action = (id, fn) => $(id).addEventListener('click', async () => { try { if (!app.proteinScene) throw new Error(t("请先打开结构")); await fn(app.proteinScene); } catch (error) { $("selection-message").textContent = error.message; } });
+    const action = (id, fn) => $(id).addEventListener('click', async () => { try { if (!app.proteinScene) throw new Error(t("请先打开结构")); if (id === 'selection-apply') await busy(id, () => fn(app.proteinScene)); else await fn(app.proteinScene); } catch (error) { $("selection-message").textContent = error.message; } });
     $("selection-form").addEventListener('submit',e => { e.preventDefault(); try { app.proteinScene?.command($("selection-expression").value); } catch (error) { $("selection-message").textContent = error.message; } });
     $("molecule-style").addEventListener('change',e => { if (app.proteinScene) { app.proteinScene.style = e.target.value; app.proteinScene.paint(); } });
     const surface = async () => { const scene = app.proteinScene; if (!scene) return; $("surface-status").textContent = t("正在更新"); try { await scene.surface($("molecule-surface").checked,Number($("surface-opacity").value)); if (scene === app.proteinScene) $("surface-status").textContent = ''; } catch (error) { $("surface-status").textContent = error.message; } };
@@ -1892,13 +1893,13 @@
       app.proteinStyle = style;
       drawDockingBox();
       app.proteinViewer.render();
-      document.querySelectorAll("[data-protein-style]").forEach((button) => button.classList.toggle("active", button.dataset.proteinStyle === style));
+      document.querySelectorAll("[data-protein-style]").forEach((button) => { button.classList.toggle("active", button.dataset.proteinStyle === style); button.setAttribute("aria-pressed", String(button.dataset.proteinStyle === style)); });
     } catch (error) {
       app.proteinViewer.removeAllSurfaces?.();
       app.proteinViewer.setStyle(protein, { cartoon: { color: "spectrum" } });
       app.proteinViewer.render();
       app.proteinStyle = "cartoon";
-      document.querySelectorAll("[data-protein-style]").forEach((button) => button.classList.toggle("active", button.dataset.proteinStyle === "cartoon"));
+      document.querySelectorAll("[data-protein-style]").forEach((button) => { button.classList.toggle("active", button.dataset.proteinStyle === "cartoon"); button.setAttribute("aria-pressed", String(button.dataset.proteinStyle === "cartoon")); });
       $("viewer-hint").textContent = t("坐标序列 · 模型 1");
       toast(error.message || t("无法显示结合位点。"), true);
     }
@@ -2045,7 +2046,7 @@
     const complete = !warning && summary.expected
       ? `<div class="box-ok">${summary.expected} ${esc(t("个关键残基的已载入原子全部在盒内"))}</div>` : "";
     coverage.innerHTML = `<div class="box-stat"><span>${esc(t("与盒相交残基"))}</span><strong>${summary.residues}</strong></div><small class="muted">${esc(t("按当前结构中已载入的原子统计；相交表示至少一个原子在盒内。"))}</small>${warning}${complete}`;
-    if (window.lucide) window.lucide.createIcons();
+    window.DrugStudioControls.icons();
   }
 
   function onBoxInputChanged() {
@@ -2163,7 +2164,8 @@
     const previous = app.resultTaskKey === task.task_id ? $("result-pose-choice")?.value : null;
     app.resultTaskKey = task.task_id;
     const panel = $("result-explanation");
-    panel.innerHTML = `<div><strong>${esc(task.state_id || task.ligand_id)} · ${esc(task.receptor_id)} · ${esc(task.engine)}</strong><p>${t("姿态")} ${task.pose_count ?? '—'} · QC ${task.qc_pass_count ?? '—'} · ${fmt(task.score,3)} kcal/mol</p>${task.error ? `<p class="error">${esc(task.error)}</p>` : ''}<select id="result-pose-choice" class="select-control">${task.poses.map(p => `<option value="${p.record_index}">${t("姿态")} ${esc(p.mode)} · ${fmt(p.affinity_kcal_mol,3)} · QC ${p.qc_pass === true ? 'pass' : p.qc_pass === false ? 'fail' : '—'} ${esc(p.qc_reason || '')}</option>`).join('')}</select><button id="result-open-pose" class="secondary-button" ${task.viewable ? '' : 'disabled'}>${t("查看姿态")}</button>${!task.viewable ? `<p>${t("缺少可核验的受体或姿态来源，无法叠合。")}</p>` : ''}<details><summary>${t("方法与来源")}</summary><pre>${esc(JSON.stringify({attempt:task.attempt,engine:task.engine,engine_version:task.engine_version,protocol:task.protocol,receptor:task.receptor_artifact?.path,poses:task.pose_artifact?.path},null,2))}</pre></details></div>`;
+    panel.innerHTML = `<div><strong>${esc(task.state_id || task.ligand_id)} · ${esc(task.receptor_id)} · ${esc(task.engine)}</strong><p>${t("姿态")} ${task.pose_count ?? '—'} · QC ${task.qc_pass_count ?? '—'} · ${fmt(task.score,3)} kcal/mol</p>${task.error ? `<p class="error">${esc(task.error)}</p>` : ''}<select id="result-pose-choice" class="select-control">${task.poses.map(p => `<option value="${p.record_index}">${t("姿态")} ${esc(p.mode)} · ${fmt(p.affinity_kcal_mol,3)} · QC ${p.qc_pass === true ? 'pass' : p.qc_pass === false ? 'fail' : '—'} ${esc(p.qc_reason || '')}</option>`).join('')}</select><button id="result-open-pose" class="secondary-button" ${task.viewable ? '' : 'disabled'}><i data-lucide="scan-eye"></i>${t("查看姿态")}</button>${!task.viewable ? `<p>${t("缺少可核验的受体或姿态来源，无法叠合。")}</p>` : ''}<details><summary>${t("方法与来源")}</summary><pre>${esc(JSON.stringify({attempt:task.attempt,engine:task.engine,engine_version:task.engine_version,protocol:task.protocol,receptor:task.receptor_artifact?.path,poses:task.pose_artifact?.path},null,2))}</pre></details></div>`;
+    window.DrugStudioControls.icons();
     if (previous != null && task.poses.some(p => String(p.record_index) === previous)) $("result-pose-choice").value = previous;
     else if (task.best_pose) $("result-pose-choice").value = String(task.best_pose.record_index);
     $("result-open-pose").addEventListener("click", async () => {
@@ -2189,11 +2191,11 @@
       const stages = data.stages || [];
       panel.innerHTML = `<div class="provenance-heading"><div><div class="eyebrow">${t("来源链")}</div><strong>${esc(data.run_id || t("当前运行"))} · ${chain.length} ${esc(t("个来源产物"))}</strong></div><button type="button" class="icon-button" data-close-provenance title="${esc(t("收起来源链"))}" aria-label="${esc(t("收起来源链"))}"><i data-lucide="x"></i></button></div><div class="provenance-chain">${chain.length ? chain.map((item, index) => `<div class="provenance-item"><span class="provenance-index">${index + 1}</span><div><strong>${esc(item.kind || "artifact")}</strong><small>${esc(item.stage || "—")} · ${esc(item.path || "—")}</small></div><span class="provenance-state ${item.exists ? "ok" : "missing"}">${item.exists ? t("存在") : t("缺失")}</span></div>`).join("") : `<div class="empty-state">${esc(t("没有找到可追溯产物。"))}</div>`}</div><div class="provenance-stages">${stages.map((item) => `<span>${esc(item.stage)} · ${esc(stageStatusLabel(item.status))}</span>`).join("")}</div>`;
       panel.querySelector("[data-close-provenance]")?.addEventListener("click", () => { panel.hidden = true; });
-      if (window.lucide) window.lucide.createIcons();
+      window.DrugStudioControls.icons();
     } catch (error) {
       panel.innerHTML = `<div class="provenance-heading"><strong>${esc(t("来源链读取失败"))}</strong><button type="button" class="icon-button" data-close-provenance title="${esc(t("收起来源链"))}" aria-label="${esc(t("收起来源链"))}"><i data-lucide="x"></i></button></div><div class="empty-state">${esc(error.message)}</div>`;
       panel.querySelector("[data-close-provenance]")?.addEventListener("click", () => { panel.hidden = true; });
-      if (window.lucide) window.lucide.createIcons();
+      window.DrugStudioControls.icons();
     }
   }
 
@@ -2260,15 +2262,23 @@
   function showView(viewName) {
     const currentDrawer = document.querySelector(".view.active:not(#view-project)")?.id?.replace("view-", "");
     if (viewName !== "project" && currentDrawer === viewName) viewName = "project";
+    const closingFocus = currentDrawer && viewName === "project" && $(`view-${currentDrawer}`).contains(document.activeElement);
     const activeTool = viewName === "workflow" ? "project" : viewName;
     document.body.classList.toggle("drawer-open", viewName !== "project");
-    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === activeTool));
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.view === activeTool);
+      button.setAttribute("aria-pressed", String(button.dataset.view === activeTool));
+      button.setAttribute("aria-controls", `view-${button.dataset.view}`);
+    });
     // The conversation remains mounted and visible underneath tool drawers.
     // Scientific views are contextual inspectors, not alternate destinations;
     // closing one should return to the exact transcript position.
     document.querySelectorAll(".view").forEach((view) => {
-      view.classList.toggle("active", view.id === "view-project" || view.id === `view-${viewName}`);
+      const active = view.id === "view-project" || view.id === `view-${viewName}`;
+      view.inert = !active;
+      view.classList.toggle("active", active);
     });
+    if (closingFocus) document.querySelector(`[data-view="${currentDrawer}"]`)?.focus({preventScroll:true});
     if (viewName === "structure") {
       if (app.proteinViewer) window.setTimeout(() => app.proteinViewer.resize(), 40); else loadProtein();
     } else if (viewName === "ligand") {
@@ -2419,6 +2429,9 @@
       } catch (error) { toast(error.message, true); }
     });
     $("new-chat").addEventListener("click", newChat);
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !document.querySelector("dialog[open]") && document.body.classList.contains("drawer-open")) { event.preventDefault(); showView("project"); }
+    });
     $("context-backdrop")?.addEventListener("click", () => showView("project"));
     document.querySelectorAll("[data-chat-filter]").forEach((button) => button.addEventListener("click", () => {
       app.chatFilter = button.dataset.chatFilter;
@@ -2426,17 +2439,17 @@
     }));
     $("open-terminal").addEventListener("click", toggleTerminalDock);
     $("close-terminal").addEventListener("click", closeTerminalDock);
-    $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { drawDockingBox(); fitProteinView(); } });
-    $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt(t("新文件名（相对项目根目录）")); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
-    $("save-module-settings").addEventListener("click", saveModuleConfig);
-    $("refresh-module-settings").addEventListener("click", fetchModuleConfig);
+    $("refresh-button").addEventListener("click", () => busy("refresh-button", () => Promise.all([fetchState(), fetchProjects()]))); $("workflow-refresh").addEventListener("click", () => busy("workflow-refresh", fetchState)); $("workflow-continue").addEventListener("click", () => busy("workflow-continue", continueWorkflow)); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", () => busy("rerun-stage", rerunFromSelectedStage)); $("save-pricing").addEventListener("click", () => busy("save-pricing", savePricing)); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { drawDockingBox(); fitProteinView(); } });
+    $("refresh-files").addEventListener("click", () => busy("refresh-files", refreshProjectFiles)); $("save-file").addEventListener("click", () => busy("save-file", saveProjectFile)); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt(t("新文件名（相对项目根目录）")); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
+    $("save-module-settings").addEventListener("click", () => busy("save-module-settings", saveModuleConfig));
+    $("refresh-module-settings").addEventListener("click", () => busy("refresh-module-settings", fetchModuleConfig));
     $("open-model-settings-from-modules").addEventListener("click", () => { $("model-settings-dialog").showModal(); if (!app.modelConfig) fetchModelConfig(); });
     $("chat-model").addEventListener("change", (event) => localStorage.setItem("dock-agent-chat-model", event.target.value.trim()));
     $("open-model-settings").addEventListener("click", () => {
       $("model-settings-dialog").showModal();
       if (!app.modelConfig) fetchModelConfig();
     });
-    $("model-settings-form").addEventListener("submit", saveModelConfig);
+    $("model-settings-form").addEventListener("submit", event => { event.preventDefault(); busy("save-model-settings", () => saveModelConfig(event)); });
     document.querySelectorAll("[data-close-model-settings]").forEach((button) => button.addEventListener("click", () => $("model-settings-dialog").close()));
     $("chat-temperature").addEventListener("input", (event) => {
       $("chat-temperature-value").value = event.target.value;
@@ -2450,17 +2463,17 @@
     bindMolecularControls();
     $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; renderPoseChoices(); await loadProtein(); });
     $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact, view = app.proteinViewer?.getView(); disposeViewers(); app.structureArtifact = picked; await loadProtein(); if (view && app.structureArtifact === picked && app.proteinViewer) { app.proteinViewer.setView(view); app.proteinViewer.render(); } });
-    $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview);
+    $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", () => busy("submit-review", submitReview));
     $("review-stage").addEventListener("change", renderReviewStage);
-    $("save-parameters").addEventListener("click", saveParameters);
-    $("reset-parameters").addEventListener("click", resetParameters);
+    $("save-parameters").addEventListener("click", () => busy("save-parameters", saveParameters));
+    $("reset-parameters").addEventListener("click", () => busy("reset-parameters", resetParameters));
     $("toggle-box").addEventListener("click", () => setBoxVisible(!app.boxVisible));
     ["center", "size"].forEach((kind) => ["x", "y", "z"].forEach((axis) => {
       // Typing a coordinate moves the wireframe immediately, so the box is
       // judged by looking at it rather than by reading six numbers.
       $(`${kind}-${axis}`).addEventListener("input", onBoxInputChanged);
     }));
-    renderReviewStage(); $("continue-button").addEventListener("click", continueWorkflow);
+    renderReviewStage(); $("continue-button").addEventListener("click", () => busy("continue-button", continueWorkflow));
     $("workflow-zoom-out").addEventListener("click", () => zoomWorkflowCanvas(-.1));
     $("workflow-zoom-in").addEventListener("click", () => zoomWorkflowCanvas(.1));
     $("workflow-fit").addEventListener("click", fitWorkflowCanvas);

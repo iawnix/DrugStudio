@@ -430,5 +430,11 @@
     "version": "0.16.22",
     "url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  "lucide.min.js": {
+    "package": "lucide",
+    "version": "0.468.0",
+    "url": "https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js",
+    "sha256": "3411692820cb8d47543f69496aa25fd603a358f4498046f41c508a5a3342210e"
   }
 }

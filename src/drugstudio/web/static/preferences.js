@@ -532,8 +532,14 @@
   };
   const bindings = [];
   let initialized = false;
+  let themeFrame = 0;
 
   function applyTheme() {
+    document.documentElement.classList.add("theme-changing");
+    cancelAnimationFrame(themeFrame);
+    themeFrame = requestAnimationFrame(() => {
+      themeFrame = requestAnimationFrame(() => document.documentElement.classList.remove("theme-changing"));
+    });
     document.documentElement.dataset.theme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
     const select = document.getElementById("theme-selector");
     if (select) select.value = theme;

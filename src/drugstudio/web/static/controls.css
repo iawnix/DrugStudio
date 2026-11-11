@@ -1,0 +1,88 @@
+/* Motion and control tokens apply across the workstation, including drawers. */
+:root {
+  --motion-fast: 120ms;
+  --motion-panel: 180ms;
+  --motion-ease: cubic-bezier(.2, .7, .2, 1);
+}
+:is(.icon-button, .tool-button, .secondary-button, .primary-button, .top-control, .tool-nav-item, .chat-filter-toggle button, .chat-archive-button) {
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease;
+}
+.icon-button { width: 34px; height: 34px; flex-shrink: 0; padding: 7px; }
+.secondary-button, .primary-button { min-height: 36px; gap: 7px; line-height: 1.3; }
+.tool-button { min-height: 30px; padding: 6px 9px; gap: 6px; line-height: 1.3; }
+:where(button, label, summary) > svg.lucide { width: 16px; height: 16px; flex-shrink: 0; pointer-events: none; }
+.tool-nav-item > svg.lucide { width: 19px; height: 19px; }
+.tool-nav-item { gap: 5px; min-height: 52px; }
+.tool-nav-item.active::before { content: ''; position: absolute; width: 3px; height: 16px; left: 0; top: calc(50% - 8px); border-radius: 3px; background: var(--blue); }
+:where(.icon-button, .tool-button, .secondary-button, .primary-button, .top-control):active:not(:disabled):not([aria-disabled="true"]) { transform: translateY(1px); }
+:where(button, summary, select, input):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.icon-button:disabled, .icon-button:disabled:hover { color: var(--muted); background: transparent; border-color: var(--line); transform: none; }
+button[aria-disabled="true"] { cursor: wait; }
+button[aria-busy="true"] > svg { visibility: hidden; }
+button[aria-busy="true"]::after { content: ''; position: absolute; width: 14px; height: 14px; left: 12px; top: calc(50% - 7px); box-sizing: border-box; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: control-spin 800ms linear infinite; pointer-events: none; }
+.icon-button[aria-busy="true"]::after { left: calc(50% - 7px); }
+button[aria-busy="true"] { opacity: .8; }
+@keyframes control-spin { to { transform: rotate(360deg); } }
+.chat-archive-button:focus-visible, .chat-list-row:focus-within .chat-archive-button { opacity: 1; }
+.chat-filter-toggle button { min-height: 28px; }
+.protein-style-control { gap: 4px; }
+.protein-style-control [aria-pressed="true"] { background: var(--accent-soft); color: var(--blue); border-color: var(--accent-line); }
+.molecule-tools input[type="checkbox"], .molecule-tools input[type="range"] { accent-color: var(--action); cursor: pointer; }
+.molecule-tools summary { display: flex; align-items: center; gap: 8px; list-style: none; }
+.molecule-tools summary::-webkit-details-marker { display: none; }
+.molecule-tools summary::before { content: ''; width: 6px; height: 6px; flex-shrink: 0; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--motion-fast) var(--motion-ease); }
+.molecule-tools[open] > summary::before, .molecule-tools details[open] > summary::before { transform: rotate(45deg); }
+.summary-chevron, .advanced-run-summary > svg { transition: transform var(--motion-panel) var(--motion-ease); }
+.advanced-run-details[open] .advanced-run-summary > svg { transform: rotate(180deg); }
+
+/* Discrete display transitions keep outgoing content visible only for the fade.
+   Inert is updated immediately in JS, so outgoing drawers cannot receive input. */
+@supports (transition-behavior: allow-discrete) {
+  .main-content > .view:not(#view-project) {
+    opacity: 0; transform: translateX(14px);
+    transition: opacity var(--motion-panel) var(--motion-ease), transform var(--motion-panel) var(--motion-ease), display var(--motion-panel) allow-discrete;
+  }
+  .main-content > .view:not(#view-project).active { opacity: 1; transform: none; }
+  .context-backdrop { opacity: 0; transition: opacity var(--motion-panel) ease, display var(--motion-panel) allow-discrete; }
+  body.drawer-open .context-backdrop { opacity: 1; }
+  body:not(.drawer-open) .context-backdrop { pointer-events: none; }
+  .model-settings-dialog {
+    opacity: 0; transform: translateY(6px) scale(.985);
+    transition: opacity var(--motion-panel) ease, transform var(--motion-panel) var(--motion-ease), display var(--motion-panel) allow-discrete, overlay var(--motion-panel) allow-discrete;
+  }
+  .model-settings-dialog[open] { opacity: 1; transform: none; }
+  .model-settings-dialog::backdrop { opacity: 0; transition: opacity var(--motion-panel) ease, display var(--motion-panel) allow-discrete, overlay var(--motion-panel) allow-discrete; }
+  .model-settings-dialog[open]::backdrop { opacity: 1; }
+  @starting-style {
+    .main-content > .view:not(#view-project).active { opacity: 0; transform: translateX(14px); }
+    body.drawer-open .context-backdrop { opacity: 0; }
+    .model-settings-dialog[open] { opacity: 0; transform: translateY(6px) scale(.985); }
+    .model-settings-dialog[open]::backdrop { opacity: 0; }
+  }
+}
+.terminal-dock { transition: flex-basis var(--motion-panel) var(--motion-ease), min-height var(--motion-panel) var(--motion-ease); }
+.terminal-dock.open .terminal-screen { animation: terminal-reveal var(--motion-panel) var(--motion-ease); }
+@keyframes terminal-reveal { from { opacity: 0; } to { opacity: 1; } }
+body.sidebar-resizing *, body.sidebar-resizing *::before, body.sidebar-resizing *::after { transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+/* Full-width mobile drawers fade in place so motion never crosses the viewport. */
+@media (max-width: 760px) {
+  .tool-nav-item { min-height: 43px; gap: 3px; }
+  .main-content > .view:not(#view-project) {
+    transform: none;
+    transition: opacity var(--motion-panel) var(--motion-ease), display var(--motion-panel) allow-discrete;
+  }
+  @starting-style { .main-content > .view:not(#view-project).active { transform: none; } }
+}
+/* Swap the entire palette atomically; staggered inherited-color transitions
+   otherwise briefly leave white buttons or dark text on already-dark panels. */
+html.theme-changing, html.theme-changing *, html.theme-changing *::before, html.theme-changing *::after { transition: none !important; }
+input[type="range"] { appearance: none; background: transparent; cursor: pointer; }
+input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: var(--line); }
+input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 2px solid var(--surface); border-radius: 50%; background: var(--action); box-shadow: 0 0 0 1px var(--action); }
+input[type="range"]::-moz-range-track { height: 4px; border-radius: 4px; background: var(--line); }
+input[type="range"]::-moz-range-thumb { width: 10px; height: 10px; border: 2px solid var(--surface); border-radius: 50%; background: var(--action); box-shadow: 0 0 0 1px var(--action); }

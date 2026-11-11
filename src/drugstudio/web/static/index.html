@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
-  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/3dmol@2.5.5/build/3Dmol-min.js"></script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="/static/appearance.css">
   <link rel="stylesheet" href="/static/vendor/katex.min.css">
   <link rel="stylesheet" href="/static/chat.css">
+  <link rel="stylesheet" href="/static/controls.css">
 </head>
 <body>
   <div class="shell">
@@ -57,9 +58,9 @@
               <div class="workflow-controls"><button class="primary-button" id="workflow-continue"><i data-lucide="play"></i>继续运行</button><button class="secondary-button" id="workflow-pause" title="在下一个安全检查点暂停" aria-label="暂停"><i data-lucide="pause"></i></button><button class="secondary-button" id="workflow-cancel" title="在下一个安全检查点取消" aria-label="取消"><i data-lucide="ban"></i></button><button class="secondary-button" id="workflow-refresh" title="刷新运行状态" aria-label="刷新运行状态"><i data-lucide="refresh-cw"></i></button></div>
               <div class="workflow-layout">
                 <div class="panel workflow-panel"><div class="panel-heading"><div><div class="eyebrow">运行 / 科学阶段</div><h2>研究执行图</h2></div><div class="workflow-canvas-tools"><span class="mono muted" id="workflow-updated">等待事件</span><button class="icon-button" id="workflow-zoom-out" title="缩小" aria-label="缩小"><i data-lucide="minus"></i></button><span class="mono muted" id="workflow-zoom-level">100%</span><button class="icon-button" id="workflow-zoom-in" title="放大" aria-label="放大"><i data-lucide="plus"></i></button><button class="icon-button" id="workflow-fit" title="适应画布" aria-label="适应画布"><i data-lucide="maximize"></i></button></div></div><div class="workflow-canvas" id="workflow-canvas"><div class="workflow-world" id="workflow-world"></div></div><div class="lineage-strip" id="workflow-lineage"></div></div>
-                <aside class="panel workflow-inspector"><div class="panel-heading"><div><div class="eyebrow">节点详情</div><h2 id="workflow-node-title">未选择节点</h2></div><span class="state-tag" id="workflow-node-status">待执行</span></div><div class="workflow-inspector-body" id="workflow-node-detail"><div class="empty-state">选择一个科学阶段查看输入、输出和状态。</div></div><section class="stage-parameters" id="stage-parameters"><div class="stage-parameters-heading"><div class="section-label">阶段参数</div><span class="stage-parameters-state" id="stage-parameters-state"></span></div><div id="stage-parameters-fields" class="stage-parameters-fields"></div><div class="stage-parameters-actions" id="stage-parameters-actions" hidden><button class="secondary-button" id="reset-parameters" type="button">还原默认</button><button class="primary-button" id="save-parameters" type="button"><i data-lucide="save"></i>保存参数</button></div><p class="stage-parameters-note" id="stage-parameters-note" hidden></p></section><button class="secondary-button rerun-button" id="rerun-stage" disabled><i data-lucide="rotate-ccw"></i>从此阶段重跑</button></aside>
+                <aside class="panel workflow-inspector"><div class="panel-heading"><div><div class="eyebrow">节点详情</div><h2 id="workflow-node-title">未选择节点</h2></div><span class="state-tag" id="workflow-node-status">待执行</span></div><div class="workflow-inspector-body" id="workflow-node-detail"><div class="empty-state">选择一个科学阶段查看输入、输出和状态。</div></div><section class="stage-parameters" id="stage-parameters"><div class="stage-parameters-heading"><div class="section-label">阶段参数</div><span class="stage-parameters-state" id="stage-parameters-state"></span></div><div id="stage-parameters-fields" class="stage-parameters-fields"></div><div class="stage-parameters-actions" id="stage-parameters-actions" hidden><button class="secondary-button" id="reset-parameters" type="button"><i data-lucide="rotate-ccw"></i>还原默认</button><button class="primary-button" id="save-parameters" type="button"><i data-lucide="save"></i>保存参数</button></div><p class="stage-parameters-note" id="stage-parameters-note" hidden></p></section><button class="secondary-button rerun-button" id="rerun-stage" disabled><i data-lucide="rotate-ccw"></i>从此阶段重跑</button></aside>
               </div>
-              <div class="workflow-bottom"><details class="panel event-panel advanced-run-details" id="advanced-run-details"><summary class="panel-heading"><div><div class="eyebrow">高级运行详情</div><h2>高级运行详情</h2></div><span class="advanced-run-summary"><span>模型与工具调用</span><span class="live-indicator" id="event-live"></span><i data-lucide="chevron-down"></i></span></summary><div class="event-list" id="event-list"><div class="empty-state">暂无运行事件。</div></div></details><div class="panel run-summary-panel"><div class="panel-heading"><div><div class="eyebrow">运行摘要</div><h2>运行摘要</h2></div></div><div class="run-facts" id="run-facts"></div><div class="cost-summary" id="cost-summary"></div><div class="pricing-form"><div class="section-label">模型价格 · USD / 1M TOKENS</div><div class="pricing-fields"><label>输入<input class="input-control" id="price-input" type="number" min="0" step="0.01"></label><label>输出<input class="input-control" id="price-output" type="number" min="0" step="0.01"></label></div><button class="secondary-button" id="save-pricing">保存价格</button></div></div></div>
+              <div class="workflow-bottom"><details class="panel event-panel advanced-run-details" id="advanced-run-details"><summary class="panel-heading"><div><div class="eyebrow">高级运行详情</div><h2>高级运行详情</h2></div><span class="advanced-run-summary"><span>模型与工具调用</span><span class="live-indicator" id="event-live"></span><i data-lucide="chevron-down"></i></span></summary><div class="event-list" id="event-list"><div class="empty-state">暂无运行事件。</div></div></details><div class="panel run-summary-panel"><div class="panel-heading"><div><div class="eyebrow">运行摘要</div><h2>运行摘要</h2></div></div><div class="run-facts" id="run-facts"></div><div class="cost-summary" id="cost-summary"></div><div class="pricing-form"><div class="section-label">模型价格 · USD / 1M TOKENS</div><div class="pricing-fields"><label>输入<input class="input-control" id="price-input" type="number" min="0" step="0.01"></label><label>输出<input class="input-control" id="price-output" type="number" min="0" step="0.01"></label></div><button class="secondary-button" id="save-pricing"><i data-lucide="save"></i>保存价格</button></div></div></div>
             </div>
           </details>
           <div class="conversation-layout">
@@ -82,7 +83,7 @@
           <section class="quality-card" id="structure-quality-card"><div><div class="eyebrow">结构质量</div><strong id="structure-quality-title">等待结构产物</strong></div><div class="quality-chips" id="structure-quality-chips"><span class="quality-chip muted">尚未评估</span></div></section>
           <div class="structure-grid">
             <div class="panel viewer-panel">
-              <div class="panel-toolbar"><div class="toolbar-title"><span class="live-indicator"></span>结构视图</div><div class="toolbar-actions protein-style-control"><button class="tool-button active" data-protein-style="cartoon">整体</button><button class="tool-button" data-protein-style="site">结合位点</button><button class="tool-button" id="toggle-box" aria-pressed="false" title="显示或隐藏对接盒线框">对接盒</button></div></div>
+              <div class="panel-toolbar"><div class="toolbar-title"><span class="live-indicator"></span>结构视图</div><div class="toolbar-actions protein-style-control"><button class="tool-button active" data-protein-style="cartoon" aria-pressed="true"><i data-lucide="orbit"></i>整体</button><button class="tool-button" data-protein-style="site" aria-pressed="false"><i data-lucide="crosshair"></i>结合位点</button><button class="tool-button" id="toggle-box" aria-pressed="false" title="显示或隐藏对接盒线框"><i data-lucide="box"></i>对接盒</button></div></div>
               <div id="protein-viewer" class="viewer-canvas"><div class="viewer-placeholder"><i data-lucide="loader-circle"></i><span>正在加载结构</span></div></div>
               <div class="viewer-footer"><span id="structure-file" class="mono" hidden>—</span><span id="box-readout" class="box-readout" hidden></span><span id="viewer-hint"></span></div>
               <div class="molecule-sequence" id="structure-sequence" aria-label="坐标序列"></div>
@@ -90,7 +91,7 @@
                 <div class="molecule-control-row"><label>显示方式 <select id="molecule-style" class="select-control"><option value="cartoon">Cartoon</option><option value="sticks">Sticks</option><option value="lines">Lines</option><option value="ball">Ball &amp; stick</option></select></label><label><input type="checkbox" id="molecule-surface">表面</label><label>透明度 <input type="range" id="surface-opacity" min="0.1" max="1" step="0.1" value="0.5"></label><span id="surface-status" role="status"></span></div>
                 <form id="selection-form" class="molecule-control-row"><input id="selection-expression" class="text-input" aria-label="选择表达式" placeholder="chain A and resi 45-60" autocomplete="off"><button class="secondary-button" type="submit">选择</button></form>
                 <p id="selection-message" role="status"></p>
-                <div class="molecule-control-row"><button type="button" class="tool-button" id="selection-focus">聚焦选择</button><button type="button" class="tool-button" id="selection-clear">清除选择</button><button type="button" class="tool-button" id="selection-label">残基标签</button><button type="button" class="tool-button" id="selection-distance">测量距离</button><button type="button" class="tool-button" id="selection-chat">发送到对话</button><button type="button" class="tool-button" id="selection-save">保存视图</button><button type="button" class="tool-button" id="selection-restore">恢复视图</button><button type="button" class="tool-button" id="selection-image">导出图片</button></div>
+                <div class="molecule-control-row"><button type="button" class="tool-button" id="selection-focus"><i data-lucide="focus"></i>聚焦选择</button><button type="button" class="tool-button" id="selection-clear"><i data-lucide="eraser"></i>清除选择</button><button type="button" class="tool-button" id="selection-label"><i data-lucide="tag"></i>残基标签</button><button type="button" class="tool-button" id="selection-distance"><i data-lucide="ruler"></i>测量距离</button><button type="button" class="tool-button" id="selection-chat"><i data-lucide="message-square-plus"></i>发送到对话</button><button type="button" class="tool-button" id="selection-save"><i data-lucide="save"></i>保存视图</button><button type="button" class="tool-button" id="selection-restore"><i data-lucide="rotate-ccw"></i>恢复视图</button><button type="button" class="tool-button" id="selection-image"><i data-lucide="image-down"></i>导出图片</button></div>
                 <details><summary>表达式示例</summary><pre>chain A and resi 45-60
 resn ASP+GLU
 protein and not hydrogen
@@ -99,8 +100,8 @@ select site, byres (protein within 5 of ligand)
 show sticks, site
 color orange, site
 zoom site</pre><p>支持上述选择子、and/or/not、括号、within/byres。model 从 0 开始；仅显示文件第一个坐标模型。resi 支持插入码；空链用 chain ""。不执行 PyMOL 脚本。</p></details>
-                <details><summary>将选择应用到对接盒</summary><div class="molecule-control-row"><label>边距 Å <input id="selection-padding" type="number" min="0" max="30" step="1" value="5"></label><button class="secondary-button" type="button" id="selection-box">预览候选盒</button></div><p id="selection-box-summary"></p><label>选择理由 <input id="selection-reason" class="text-input"></label><button type="button" class="primary-button" id="selection-apply">应用到工作流</button><p>预览仅修改草稿；应用会记录结构来源和选择理由，并使已有对接结果失效，等待重跑。</p></details>
-                <details><summary>结构来源</summary><pre id="structure-source"></pre><button type="button" class="tool-button" id="structure-open-file">从项目文件打开</button></details>
+                <details><summary>将选择应用到对接盒</summary><div class="molecule-control-row"><label>边距 Å <input id="selection-padding" type="number" min="0" max="30" step="1" value="5"></label><button class="secondary-button" type="button" id="selection-box"><i data-lucide="box"></i>预览候选盒</button></div><p id="selection-box-summary"></p><label>选择理由 <input id="selection-reason" class="text-input"></label><button type="button" class="primary-button" id="selection-apply"><i data-lucide="check"></i>应用到工作流</button><p>预览仅修改草稿；应用会记录结构来源和选择理由，并使已有对接结果失效，等待重跑。</p></details>
+                <details><summary>结构来源</summary><pre id="structure-source"></pre><button type="button" class="tool-button" id="structure-open-file"><i data-lucide="folder-open"></i>从项目文件打开</button></details>
               </details>
             </div>
             <aside class="panel pocket-panel">
@@ -164,7 +165,7 @@ zoom site</pre><p>支持上述选择子、and/or/not、括号、within/byres。m
       <div class="model-config-state"><span class="connection-dot offline" id="model-config-dot"></span><span id="model-config-status">尚未配置 API Key</span></div>
       <p class="muted">设置保存在本机服务器，重启后自动读取。已配置的密钥不会回显，留空保存会保留原密钥。</p>
       <label class="clear-key-option"><input id="clear-model-api-key" type="checkbox">清除已保存的 API Key</label>
-      <div class="dialog-actions"><button class="secondary-button" type="button" data-close-model-settings>取消</button><button class="primary-button" type="submit" id="save-model-settings">保存设置</button></div>
+      <div class="dialog-actions"><button class="secondary-button" type="button" data-close-model-settings>取消</button><button class="primary-button" type="submit" id="save-model-settings"><i data-lucide="save"></i>保存设置</button></div>
     </form>
   </dialog>
   <div class="auth-overlay" id="auth-overlay" hidden><form class="auth-dialog" id="auth-form"><div class="eyebrow">工作区访问</div><h2>解锁工作台</h2><p>输入服务器启动时打印的访问令牌。</p><label for="auth-token">访问令牌</label><input id="auth-token" class="input-control" type="password" autocomplete="current-password" required><div class="auth-error" id="auth-error"></div><button class="primary-button" type="submit">继续</button></form></div>
@@ -176,6 +177,7 @@ zoom site</pre><p>支持上述选择子、and/or/not、括号、within/byres。m
   <script src="/static/vendor/highlight.min.js"></script>
   <script src="/static/chat-renderer.js"></script>
   <script src="/static/molecular-viewer.js"></script>
+  <script src="/static/controls.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

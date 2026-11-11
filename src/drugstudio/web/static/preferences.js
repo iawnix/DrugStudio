@@ -63,6 +63,7 @@
     "终端": "Terminal",
     "重启 shell": "Restart shell",
     "关闭终端": "Close terminal",
+    "收起终端": "Collapse terminal",
     "项目 / 文件": "Project / files",
     "项目文件": "Project files",
     "新建文件": "New file",

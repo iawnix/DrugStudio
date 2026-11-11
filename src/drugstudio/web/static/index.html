@@ -66,7 +66,7 @@
               <form class="chat-form" id="chat-form"><div class="chat-composer-shell"><textarea id="chat-input" rows="3" placeholder="询问当前项目、结构或对接结果"></textarea><div class="chat-form-footer"><div class="chat-model-settings"><label>模型<input id="chat-model" class="input-control" type="text" value="gpt-4.1-mini" aria-label="聊天模型"></label><label>温度 <output id="chat-temperature-value">0.2</output><input id="chat-temperature" type="range" min="0" max="2" step="0.1" value="0.2" aria-label="模型温度"></label><button class="icon-button model-settings-button" type="button" id="open-model-settings" title="模型连接设置" aria-label="模型连接设置"><i data-lucide="settings-2"></i></button></div><span id="chat-status" class="chat-status"></span><button class="primary-button" type="submit" id="send-chat"><i data-lucide="arrow-up"></i><span>发送</span></button></div></div></form>
             </section>
           </div>
-          <section class="terminal-dock" id="terminal-dock" aria-label="项目终端"><div class="terminal-toolbar"><div><strong>终端</strong><span class="terminal-session-indicator"><i></i><span id="terminal-cwd">/</span></span></div><div class="terminal-dock-actions"><button class="icon-button" type="button" id="restart-terminal" title="重启 shell" aria-label="重启 shell"><i data-lucide="rotate-ccw"></i></button><button class="icon-button" type="button" id="close-terminal" title="关闭终端" aria-label="关闭终端"><i data-lucide="x"></i></button></div></div><div class="terminal-screen" id="terminal-screen"></div></section>
+          <section class="terminal-dock" id="terminal-dock" aria-label="项目终端"><div class="terminal-toolbar"><div><strong>终端</strong><span class="terminal-session-indicator"><i></i><span id="terminal-cwd">/</span></span></div><div class="terminal-dock-actions"><button class="icon-button" type="button" id="restart-terminal" title="重启 shell" aria-label="重启 shell"><i data-lucide="rotate-ccw"></i></button><button class="icon-button" type="button" id="close-terminal" title="收起终端" aria-label="收起终端"><i data-lucide="x"></i></button></div></div><div class="terminal-screen" id="terminal-screen"></div></section>
         </section>
 
         <section class="view" id="view-files">
@@ -130,7 +130,7 @@
         <button class="tool-nav-item" data-view="results" title="结果"><i data-lucide="chart-no-axes-combined"></i><span>结果</span></button>
         <button class="tool-nav-item" data-view="review" title="人工审核"><i data-lucide="clipboard-check"></i><span>审核</span></button>
         <button class="tool-nav-item" data-view="settings" title="模块设置"><i data-lucide="settings"></i><span>设置</span></button>
-        <button class="tool-nav-item terminal-tool" type="button" id="open-terminal" title="打开终端"><i data-lucide="terminal"></i><span>终端</span></button>
+        <button class="tool-nav-item terminal-tool" type="button" id="open-terminal" title="打开终端" aria-label="打开终端" aria-controls="terminal-dock" aria-expanded="false"><i data-lucide="terminal"></i><span>终端</span></button>
       </aside>
     </div>
     <div class="context-backdrop" id="context-backdrop" aria-hidden="true"></div>

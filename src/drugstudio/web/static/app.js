@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, moduleConfig: null, codeEditor: null, runKey: "",
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalStarting: false, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, moduleConfig: null, codeEditor: null, runKey: "",
     boxVisible: false, boxShapes: [], pocketLabel: null, structureAtoms: [],
     structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null,
     parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false,
@@ -83,7 +83,7 @@
       [input.dataset.moduleKey, input.value, input.checked]);
     const forms = [...document.querySelectorAll("input[id],textarea[id],select[id]")].map((input) =>
       [input.id, input.value, input.checked]);
-    renderChatList(); renderChat(); renderReviewStage();
+    renderChatList(); renderChat(); renderReviewStage(); syncTerminalToggle();
     document.querySelectorAll("[data-close-drawer]").forEach((button) => {
       button.title = t("关闭工具面板");
       button.setAttribute("aria-label", button.title);
@@ -1086,6 +1086,7 @@
   }
 
   async function ensureTerminal() {
+    if (!$("terminal-dock").classList.contains("open") || document.hidden) return;
     if (!createTerminal()) return;
     if (app.terminalSession) {
       app.terminal.options.disableStdin = false;
@@ -1093,16 +1094,23 @@
       if (!app.terminalPollTimer) app.terminalPollTimer = window.setInterval(pollTerminal, 350);
       return;
     }
+    if (app.terminalStarting) return;
+    app.terminalStarting = true;
     try {
       const response = await postJson("/api/project/terminal/start", { cwd: app.terminalCwd });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
       app.terminalSession = data.session_id; app.terminalCwd = data.cwd || ""; app.terminalCursor = 0;
       $("terminal-cwd").textContent = `/${app.projectId}${app.terminalCwd ? `/${app.terminalCwd}` : ""}`;
       app.terminal.options.disableStdin = false;
-      await resizeTerminal(); await pollTerminal();
-      app.terminalPollTimer = window.setInterval(pollTerminal, 350);
-      app.terminal.focus();
+      if ($("terminal-dock").classList.contains("open") && !document.hidden) {
+        await resizeTerminal(); await pollTerminal();
+        if ($("terminal-dock").classList.contains("open") && !document.hidden && app.terminalSession) {
+          if (!app.terminalPollTimer) app.terminalPollTimer = window.setInterval(pollTerminal, 350);
+          app.terminal.focus();
+        }
+      }
     } catch (error) { app.terminal.writeln(`\r\n\x1b[31m${error.message}\x1b[0m`); }
+    finally { app.terminalStarting = false; }
   }
 
   async function resizeTerminal() {
@@ -1266,13 +1274,29 @@
     } catch (error) { toast(error.message, true); }
   }
 
+  function syncTerminalToggle() {
+    const open = $("terminal-dock").classList.contains("open");
+    const button = $("open-terminal");
+    button.classList.toggle("active", open);
+    button.setAttribute("aria-expanded", String(open));
+    button.title = t(open ? "收起终端" : "打开终端");
+    button.setAttribute("aria-label", button.title);
+  }
+
+  function toggleTerminalDock() {
+    if ($("terminal-dock").classList.contains("open")) closeTerminalDock();
+    else openTerminalDock();
+  }
+
   function openTerminalDock() {
     $("terminal-dock").classList.add("open");
+    syncTerminalToggle();
     requestAnimationFrame(ensureTerminal);
   }
 
   function closeTerminalDock() {
     $("terminal-dock").classList.remove("open");
+    syncTerminalToggle();
     if (app.terminalPollTimer) window.clearInterval(app.terminalPollTimer);
     app.terminalPollTimer = null;
   }
@@ -2182,7 +2206,7 @@
       app.chatFilter = button.dataset.chatFilter;
       renderChatList();
     }));
-    $("open-terminal").addEventListener("click", openTerminalDock);
+    $("open-terminal").addEventListener("click", toggleTerminalDock);
     $("close-terminal").addEventListener("click", closeTerminalDock);
     $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.boxShapes = []; drawDockingBox(); fitProteinView(); } });
     $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt(t("新文件名（相对项目根目录）")); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });

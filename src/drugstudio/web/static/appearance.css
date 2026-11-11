@@ -325,33 +325,40 @@ button:disabled, input:disabled, select:disabled, textarea:disabled {
 .pocket-card, .review-pocket-card, .quality-card, .explanation-strip { border-radius: var(--radius-control); }
 ::selection { color: var(--ink); background: var(--selection); }
 
-/* Desktop sidebars are adjustable without taking the conversation out of the
-   grid. The handles stay narrow and only become visible on hover/focus. */
+/* Resizable desktop navigation and scientific drawers share one width model. */
+.sidebar-resizer { display: none; }
 @media (min-width: 761px) {
-  :root { --left-sidebar-width: 248px; --right-sidebar-width: 74px; }
+  :root { --left-sidebar-width: 248px; --right-sidebar-width: 74px; --drawer-width: 680px; }
   .layout {
-    --left-sidebar-width: 248px;
-    --right-sidebar-width: 74px;
     grid-template-columns: var(--left-sidebar-width) 6px minmax(0, 1fr) 6px var(--right-sidebar-width);
   }
+  .sidebar { min-width: 0; }
+  .tool-sidebar { width: 100%; }
   .sidebar-resizer {
-    position: relative; z-index: 35; width: 6px; min-width: 6px;
+    display: block; position: relative; z-index: 35; width: 6px; min-width: 6px;
     cursor: col-resize; touch-action: none; background: transparent;
   }
   .sidebar-resizer::after {
-    content: ""; position: absolute; inset: 0 2px; background: transparent;
+    content: ""; position: absolute; inset: 0 2px; background: var(--line);
     transition: background-color .15s ease;
   }
   .sidebar-resizer:hover::after, .sidebar-resizer:focus-visible::after,
-  body.sidebar-resizing .sidebar-resizer::after { background: var(--blue); }
+  .sidebar-resizer.resizing::after { background: var(--blue); }
+  .sidebar-resizer:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
   body.sidebar-resizing, body.sidebar-resizing * { cursor: col-resize !important; user-select: none !important; }
-  .main-content > .view:not(#view-project) { right: calc(var(--right-sidebar-width) + 12px); }
+  /* Canvas surfaces must not swallow pointer movement while dragging. */
+  body.sidebar-resizing canvas, body.sidebar-resizing iframe { pointer-events: none; }
+  .main-content > .view:not(#view-project) {
+    right: calc(var(--right-sidebar-width) + 12px);
+    width: min(var(--drawer-width), calc(100vw - var(--left-sidebar-width) - var(--right-sidebar-width) - 40px));
+  }
   .context-backdrop { left: calc(var(--left-sidebar-width) + 6px); right: calc(var(--right-sidebar-width) + 6px); }
+  .drawer-resizer {
+    display: none; position: fixed; z-index: 36; top: 104px; bottom: 34px;
+    right: calc(var(--right-sidebar-width) + 9px + min(var(--drawer-width), 100vw - var(--left-sidebar-width) - var(--right-sidebar-width) - 40px));
+  }
+  body.drawer-open .drawer-resizer { display: block; }
 }
 @media (min-width: 761px) and (max-width: 1120px) {
   :root { --left-sidebar-width: 210px; --right-sidebar-width: 64px; }
-  .layout { --left-sidebar-width: 210px; --right-sidebar-width: 64px; }
-}
-@media (max-width: 760px) {
-  .sidebar-resizer { display: none; }
 }

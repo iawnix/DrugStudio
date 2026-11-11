@@ -1024,7 +1024,7 @@
         const ext = entry.name.toLowerCase().split(".").pop();
         const icon = entry.kind === "directory" ? "folder" : disabled ? "file-x-2" : editorModes[ext] ? "file-code-2" : "file-text";
         const title = disabled ? entry.preview_reason || t("无法预览") : entry.kind === "directory" ? t("打开文件夹") : t("打开文件");
-        return `<button class="file-entry ${entry.kind} ${disabled ? "unsupported" : ""}" data-file-path="${esc(entry.path)}" data-file-kind="${entry.kind}" ${disabled ? "disabled" : ""} title="${esc(title)}"><i data-lucide="${icon}"></i><span>${esc(entry.name)}</span>${entry.kind === "file" ? `<small>${formatBytes(entry.size)}${disabled ? t(" · 不可预览") : ""}</small>` : ""}</button>`;
+        return `<button class="file-entry ${entry.kind} ${entry.path === app.filePath ? "selected" : ""} ${disabled ? "unsupported" : ""}" data-file-path="${esc(entry.path)}" data-file-kind="${entry.kind}" ${disabled ? "disabled" : ""} title="${esc(title)}"><i data-lucide="${icon}"></i><span>${esc(entry.name)}</span>${entry.kind === "file" ? `<small>${formatBytes(entry.size)}${disabled ? t(" · 不可预览") : ""}</small>` : ""}</button>`;
       }).join("");
       $("file-tree").innerHTML = parent + rows || `<div class="empty-state">${t("此文件夹为空")}</div>`;
       if (data.truncated) $("file-tree").insertAdjacentHTML("afterbegin", `<div class="file-list-note">${esc(t("仅显示前 500 项"))}</div>`);
@@ -1285,18 +1285,10 @@
   }
 
   function messageText(value) {
-    if (Array.isArray(value)) return value.map(messageText).filter(Boolean).join("");
-    if (value && typeof value === "object") {
-      if (typeof value.text === "string") return value.text;
-      if (value.content !== undefined) return messageText(value.content);
-      return "";
-    }
-    if (typeof value !== "string") return value == null ? "" : String(value);
-    const trimmed = value.trim();
-    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-      try { return messageText(JSON.parse(trimmed)); } catch (_) { /* ordinary text */ }
-    }
-    return value;
+    const isText = (block) => block && ["text", "output_text", "input_text"].includes(block.type) && typeof block.text === "string";
+    if (Array.isArray(value)) return value.map((block) => typeof block === "string" ? block : isText(block) ? block.text : "").join("");
+    if (value && typeof value === "object") return isText(value) ? value.text : "";
+    return typeof value === "string" ? value : "";
   }
 
   function renderChat() {
@@ -2066,51 +2058,101 @@
   }
 
   function initializeSidebarResize() {
-    const layout = document.querySelector(".layout");
-    if (!layout || layout.dataset.resizersReady) return;
-    layout.dataset.resizersReady = "1";
-    const storedLeft = Number(localStorage.getItem("drugstudio-left-sidebar-width"));
-    const storedRight = Number(localStorage.getItem("drugstudio-right-sidebar-width"));
+    const root = document.documentElement;
+    const sides = ["left", "right", "drawer"];
+    const property = (side) => side === "drawer" ? "--drawer-width" : `--${side}-sidebar-width`;
+    const key = (side) => `drugstudio-${side}-sidebar-width`;
+    const preferred = {};
+    sides.forEach((side) => {
+      try {
+        const value = Number(localStorage.getItem(key(side)));
+        if (Number.isFinite(value) && value > 0) preferred[side] = value;
+      } catch (_) { /* Preferences are optional when storage is unavailable. */ }
+    });
+    const handles = [...document.querySelectorAll("[data-sidebar-resizer]")];
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-    const setWidth = (side, value) => {
-      const min = side === "left" ? 190 : 58;
-      const max = side === "left" ? 380 : Math.min(360, Math.max(180, window.innerWidth * .32));
-      const width = clamp(value, min, max);
-      const property = side === "left" ? "--left-sidebar-width" : "--right-sidebar-width";
-      layout.style.setProperty(property, `${width}px`);
-      document.documentElement.style.setProperty(property, `${width}px`);
-      localStorage.setItem(side === "left" ? "drugstudio-left-sidebar-width" : "drugstudio-right-sidebar-width", String(Math.round(width)));
+    const widths = {}, ranges = {};
+    const defaults = () => ({left: window.innerWidth <= 1120 ? 210 : 248,
+      right: window.innerWidth <= 1120 ? 64 : 74, drawer: 680});
+    const apply = () => {
+      if (window.innerWidth <= 760) return;
+      const base = defaults(), available = window.innerWidth;
+      widths.left = clamp(preferred.left ?? base.left, 190, Math.min(420, available - 58 - 332));
+      widths.right = clamp(preferred.right ?? base.right, 58, Math.min(200, available - widths.left - 332));
+      ranges.left = [190, Math.min(420, available - widths.right - 332)];
+      ranges.right = [58, Math.min(200, available - widths.left - 332)];
+      const drawerMax = Math.min(1200, available - widths.left - widths.right - 40);
+      ranges.drawer = [Math.min(320, drawerMax), drawerMax];
+      widths.drawer = clamp(preferred.drawer ?? base.drawer, ...ranges.drawer);
+      sides.forEach((side) => root.style.setProperty(property(side), `${widths[side]}px`));
+      handles.forEach((handle) => {
+        const side = handle.dataset.sidebarResizer;
+        handle.setAttribute("aria-valuemin", Math.round(ranges[side][0]));
+        handle.setAttribute("aria-valuemax", Math.round(ranges[side][1]));
+        handle.setAttribute("aria-valuenow", Math.round(widths[side]));
+      });
     };
-    if (Number.isFinite(storedLeft) && storedLeft > 0) setWidth("left", storedLeft);
-    if (Number.isFinite(storedRight) && storedRight > 0) setWidth("right", storedRight);
+    const setWidth = (side, value) => {
+      preferred[side] = clamp(value, ...ranges[side]);
+      apply();
+    };
     let drag = null;
+    const persist = (side) => {
+      try { localStorage.setItem(key(side), String(Math.round(widths[side]))); } catch (_) { /* session only */ }
+    };
     const finish = () => {
       if (!drag) return;
-      drag = null; document.body.classList.remove("sidebar-resizing");
+      const {handle, side} = drag;
+      drag = null;
+      persist(side); handle.classList.remove("resizing");
+      document.body.classList.remove("sidebar-resizing");
     };
-    document.querySelectorAll("[data-sidebar-resizer]").forEach((handle) => {
+    handles.forEach((handle) => {
+      const side = handle.dataset.sidebarResizer;
       handle.addEventListener("pointerdown", (event) => {
-        if (window.matchMedia("(max-width: 760px)").matches) return;
-        handle.setPointerCapture?.(event.pointerId);
-        drag = { side: handle.dataset.sidebarResizer, startX: event.clientX,
-          startWidth: parseFloat(getComputedStyle(layout).getPropertyValue(handle.dataset.sidebarResizer === "left" ? "--left-sidebar-width" : "--right-sidebar-width")) || (handle.dataset.sidebarResizer === "left" ? 248 : 74) };
-        document.body.classList.add("sidebar-resizing"); event.preventDefault();
+        if (window.innerWidth <= 760 || event.button !== 0 || !event.isPrimary) return;
+        apply();
+        drag = {handle, side, pointerId: event.pointerId, startX: event.clientX, startWidth: widths[side]};
+        handle.setPointerCapture(event.pointerId);
+        handle.classList.add("resizing"); document.body.classList.add("sidebar-resizing");
+        event.preventDefault();
+      });
+      handle.addEventListener("lostpointercapture", finish);
+      handle.addEventListener("dblclick", () => {
+        delete preferred[side];
+        try { localStorage.removeItem(key(side)); } catch (_) { /* session only */ }
+        apply();
       });
       handle.addEventListener("keydown", (event) => {
-        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-        const direction = event.key === "ArrowRight" ? 1 : -1;
-        const side = handle.dataset.sidebarResizer;
-        setWidth(side, (parseFloat(getComputedStyle(layout).getPropertyValue(side === "left" ? "--left-sidebar-width" : "--right-sidebar-width")) || (side === "left" ? 248 : 74)) + direction * 12);
-        event.preventDefault();
+        if (window.innerWidth <= 760 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        apply();
+        const direction = (event.key === "ArrowRight" ? 1 : -1) * (side === "left" ? 1 : -1);
+        setWidth(side, event.key === "Home" ? ranges[side][0] : event.key === "End" ? ranges[side][1] : widths[side] + direction * (event.shiftKey ? 40 : 12));
+        persist(side); event.preventDefault();
       });
     });
     window.addEventListener("pointermove", (event) => {
-      if (!drag) return;
-      const delta = event.clientX - drag.startX;
-      setWidth(drag.side, drag.startWidth + (drag.side === "left" ? delta : -delta));
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      setWidth(drag.side, drag.startWidth + (event.clientX - drag.startX) * (drag.side === "left" ? 1 : -1));
     });
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", finish);
+    window.addEventListener("resize", () => { finish(); apply(); });
+    // Editors, terminals and WebGL canvases need an explicit resize when only
+    // their parent changes size (the browser window itself has not changed).
+    let frame;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if ($("view-files").classList.contains("active")) app.codeEditor?.refresh();
+        if ($("view-structure").classList.contains("active")) app.proteinViewer?.resize();
+        if ($("view-ligand").classList.contains("active")) app.ligandViewer?.resize();
+        if ($("terminal-dock").classList.contains("open")) resizeTerminal();
+      });
+    });
+    document.querySelectorAll(".main-content, .viewer-canvas, .context-editor").forEach((node) => observer.observe(node));
+    apply();
   }
 
   document.addEventListener("DOMContentLoaded", () => {

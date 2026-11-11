@@ -447,6 +447,9 @@
     "随机种子": "Random seed",
     "对接与构象生成的随机种子；复现结果时保持不变": "Random seed for docking and conformer generation; keep fixed for reproducibility",
     "模型 ": "Model ",
+    "调整项目与会话侧栏宽度": "Resize projects and conversations sidebar",
+    "调整研究工具侧栏宽度": "Resize tools sidebar",
+    "调整工具面板宽度": "Resize tool panel",
     "耗时 ": "Elapsed ",
     " · 不可预览": " · No preview"
   }

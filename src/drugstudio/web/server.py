@@ -475,36 +475,38 @@ class WebApplication:
             return {}
 
     @staticmethod
-    def _message_text(value) -> str:
-        """Flatten Responses API content blocks for the transcript.
+    def _message_text(value, *, recover_legacy: bool = True) -> str:
+        """Read text blocks without exposing metadata or changing ordinary text.
 
-        OpenAI-compatible endpoints may return ``[{type: text, text: ...}]``
-        instead of a plain string. Keep tool and history messages readable and
-        migrate older stores that accidentally persisted Python's list repr.
+        Older assistant replies were saved using str(list). Decode that narrow
+        legacy shape on read; never rewrite the original conversation store.
         """
-        original = value
+        text_types = {"text", "output_text", "input_text"}
         if isinstance(value, str):
             candidate = value.strip()
-            if candidate.startswith(("[", "{")):
+            if (recover_legacy and len(candidate) <= 200_000 and candidate.startswith("[")
+                    and ('"type"' in candidate or "'type'" in candidate)):
                 try:
-                    value = json.loads(candidate)
-                except json.JSONDecodeError:
                     try:
-                        value = ast.literal_eval(candidate)
-                    except (ValueError, SyntaxError):
-                        return original
-            else:
-                return value
+                        blocks = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        blocks = ast.literal_eval(candidate)
+                    if (isinstance(blocks, list) and blocks
+                            and all(isinstance(block, dict) and isinstance(block.get("type"), str)
+                                    for block in blocks)
+                            and any(block["type"] in text_types for block in blocks)):
+                        return WebApplication._message_text(blocks)
+                except (ValueError, SyntaxError, RecursionError):
+                    pass
+            return value
         if isinstance(value, dict):
-            if value.get("type") in {"text", "output_text", "input_text"}:
-                return WebApplication._message_text(value.get("text", value.get("content", "")))
-            if "content" in value:
-                return WebApplication._message_text(value["content"])
+            if isinstance(value.get("type"), str) and value["type"] in text_types and isinstance(value.get("text"), str):
+                return value["text"]
             return ""
         if isinstance(value, (list, tuple)):
-            parts = [WebApplication._message_text(item) for item in value]
-            return "".join(part for part in parts if part)
-        return "" if value is None else str(value)
+            return "".join(WebApplication._message_text(block, recover_legacy=False)
+                           for block in value if isinstance(block, (dict, str)))
+        return ""
 
     def _write_chat_store(self, value: dict) -> None:
         self.chat_store.parent.mkdir(parents=True, exist_ok=True)
@@ -524,7 +526,7 @@ class WebApplication:
         for row in rows:
             item = dict(row)
             item["messages"] = [
-                {**message, "content": self._message_text(message.get("content", ""))}
+                {**message, "content": self._message_text(message.get("content", ""), recover_legacy=message.get("role") == "assistant")}
                 for message in item.get("messages", []) if isinstance(message, dict)
             ]
             chats.append(item)
@@ -549,7 +551,7 @@ class WebApplication:
         for item in messages[-100:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
                 continue
-            message = {"role": item["role"], "content": self._message_text(item.get("content"))[:20_000]}
+            message = {"role": item["role"], "content": self._message_text(item.get("content"), recover_legacy=item["role"] == "assistant")[:20_000]}
             if isinstance(item.get("actions"), list):
                 message["actions"] = item["actions"][:20]
             clean.append(message)
@@ -941,7 +943,7 @@ class WebApplication:
         for item in (history or [])[-24:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
                 continue
-            content = self._message_text(item.get("content"))[:20_000]
+            content = self._message_text(item.get("content"), recover_legacy=item["role"] == "assistant")[:20_000]
             messages.append(HumanMessage(content=content) if item["role"] == "user"
                             else AIMessage(content=content))
         return messages

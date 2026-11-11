@@ -176,6 +176,17 @@ class ApprovalGate(ChatTestCase):
             project_root=self.project_root, run_root=self.run_root, chat_id="chat-1", payload={})
         return outcome, model
 
+    def test_model_text_blocks_are_returned_as_text_and_restored_readably(self):
+        blocks = [{"type": "text", "text": "你好！\n", "id": "msg_1", "phase": "final_answer"},
+                  {"type": "text", "text": "运行已完成。", "annotations": []}]
+        outcome, _ = self.drive([AIMessage(content=blocks)])
+        self.assertEqual(outcome["reply"], "你好！\n运行已完成。")
+        restored = self.app._restore_messages([
+            {"role": "user", "content": repr(blocks)},
+            {"role": "assistant", "content": repr(blocks)}])
+        self.assertEqual(restored[0].content, repr(blocks))
+        self.assertEqual(restored[1].content, outcome["reply"])
+
     def test_a_command_is_not_run_before_it_is_approved(self):
         marker = self.project_root / "ran.txt"
         outcome, _ = self.drive([self.call("run_command", {"command": f"touch {marker}"})])

@@ -24,21 +24,63 @@
     lua: ["lua", "lua", "Lua"], pl: ["perl", "perl", "Perl"], dockerfile: ["dockerfile", "dockerfile", "Dockerfile"],
     toml: ["toml", "toml", "TOML"], ini: ["properties", "text/x-properties", "INI"], conf: ["properties", "text/x-properties", "Config"]
   };
-  // Every user-facing string goes through t(). Source strings are Chinese,
-  // matching the primary audience, and MESSAGES holds the tables for other
-  // locales; t() passes a string through when no translation exists. The
-  // seam matters more than the table: before this, half the interface was
-  // Chinese and half was whatever the original author typed in English,
-  // with no single place to see or change it.
-  const MESSAGES = {
-    en: {
-      "开始": "Start", "完成": "Done", "查看日志": "View logs", "查看参数": "Parameters",
-      "从此处重跑": "Rerun from here", "接管节点": "Take over", "等待事件": "Waiting for events",
-      "模型已连接": "Model connected", "模型未连接": "Model not connected",
-    },
-  };
-  const LOCALE = (document.documentElement.lang || "zh-CN").slice(0, 2);
-  const t = (text) => MESSAGES[LOCALE]?.[text] ?? text;
+  const t = window.DrugStudioUI.t;
+
+  function refreshAppearance() {
+    const palette = getComputedStyle(document.documentElement);
+    const background = palette.getPropertyValue("--surface-2").trim();
+    [app.proteinViewer, app.ligandViewer].forEach((viewer) => {
+      if (viewer) { viewer.setBackgroundColor(background); viewer.render(); }
+    });
+    if (app.terminal) app.terminal.options.theme = terminalTheme();
+  }
+
+  function terminalTheme() {
+    const palette = getComputedStyle(document.documentElement);
+    return { background: palette.getPropertyValue("--surface-2").trim(),
+      foreground: palette.getPropertyValue("--ink").trim(),
+      cursor: palette.getPropertyValue("--blue").trim(), selectionBackground: "#689df855" };
+  }
+
+  function refreshLanguage() {
+    // Preserve unsaved drafts and the user's reading position. No scientific
+    // jobs or settings writes are triggered by this preference.
+    const scrollTop = $("chat-messages").scrollTop;
+    const reason = $("pending-reason")?.value;
+    const moduleDraft = [...document.querySelectorAll("[data-module-key]")].map((input) =>
+      [input.dataset.moduleKey, input.value, input.checked]);
+    const forms = [...document.querySelectorAll("input[id],textarea[id],select[id]")].map((input) =>
+      [input.id, input.value, input.checked]);
+    renderChatList(); renderChat(); renderReviewStage();
+    document.querySelectorAll("[data-close-drawer]").forEach((button) => {
+      button.title = t("关闭工具面板");
+      button.setAttribute("aria-label", button.title);
+    });
+    if (reason !== undefined && $("pending-reason")) $("pending-reason").value = reason;
+    $("chat-messages").scrollTop = scrollTop;
+    setConnection(!$("connection-dot").classList.contains("offline"));
+    renderChatStatus();
+    if (app.state) {
+      renderAll();
+      if (app.selectedStage) inspectWorkflowStage(app.selectedStage);
+    }
+    if (app.moduleConfig) {
+      renderModuleConfig();
+      moduleDraft.forEach(([key, value, checked]) => {
+        const input = document.querySelector(`[data-module-key="${key}"]`);
+        if (input) { input.value = value; input.checked = checked; }
+      });
+    }
+    forms.forEach(([id, value, checked]) => {
+      const input = $(id);
+      if (input) { input.value = value; input.checked = checked; }
+    });
+    if (app.state) {
+      renderPocketDetail();
+      const ligand = app.state.ligands?.[Number($("ligand-select").value || 0)];
+      renderProperties((app.state.report?.ligands || []).find((item) => item.ligand_id === ligand?.ligand_id));
+    }
+  }
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
@@ -175,7 +217,7 @@
       app.moduleConfig = data;
       renderModuleConfig();
     } catch (error) {
-      $("module-config-status").textContent = `模块配置读取失败：${error.message}`;
+      $("module-config-status").textContent = t("模块配置读取失败：{p0}", { p0: error.message });
       $("module-config-dot").classList.add("offline");
     }
   }
@@ -192,18 +234,18 @@
         const check = checks[key] || {};
         const isCheckbox = key === "af3_terms_acknowledged";
         const inputType = isCheckbox ? "checkbox" : (["af3_cpus", "af3_gpu_count"].includes(key) ? "number" : "text");
-        const status = check.ok ? "可用" : (check.detail || "待检查");
+        const status = t(check.ok ? "可用" : (check.detail || "待检查"));
         const checkbox = isCheckbox ? (values[key] === "1" || values[key] === "yes" || values[key] === "true" ? " checked" : "") : "";
         const value = isCheckbox ? "1" : esc(values[key] || "");
-        return `<label class="module-setting-field ${isCheckbox ? "checkbox-setting" : ""}"><span><strong>${esc(meta[0])}</strong><small>${esc(meta[1])}</small></span><input class="input-control" data-module-key="${esc(key)}" type="${inputType}" ${inputType === "number" ? "min=\"1\" step=\"1\"" : ""}${checkbox} value="${value}" autocomplete="off"><em class="module-setting-check ${check.ok ? "ok" : "bad"}" data-module-check="${esc(key)}">${esc(status)}</em></label>`;
+        return `<label class="module-setting-field ${isCheckbox ? "checkbox-setting" : ""}"><span><strong>${esc(t(meta[0]))}</strong><small>${esc(t(meta[1]))}</small></span><input class="input-control" data-module-key="${esc(key)}" type="${inputType}" ${inputType === "number" ? "min=\"1\" step=\"1\"" : ""}${checkbox} value="${value}" autocomplete="off"><em class="module-setting-check ${check.ok ? "ok" : "bad"}" data-module-check="${esc(key)}">${esc(status)}</em></label>`;
       }).join("");
-      return `<section class="panel module-settings-group"><div class="panel-heading"><div><div class="eyebrow">MODULE</div><h2>${esc(group.label || name)}</h2></div><span class="mono muted">${(group.keys || []).length} 项</span></div><div class="module-settings-fields">${fields}</div></section>`;
+      return `<section class="panel module-settings-group"><div class="panel-heading"><div><div class="eyebrow">${t("模块")}</div><h2>${esc(t(group.label || name))}</h2></div><span class="mono muted">${(group.keys || []).length} ${esc(t("项"))}</span></div><div class="module-settings-fields">${fields}</div></section>`;
     }).join("");
-    $("module-settings-groups").innerHTML = groupHtml || `<div class="empty-state">没有可配置模块。</div>`;
+    $("module-settings-groups").innerHTML = groupHtml || `<div class="empty-state">${esc(t("没有可配置模块。"))}</div>`;
     const allChecks = Object.values(checks);
     const healthy = allChecks.length > 0 && allChecks.every((item) => item.ok);
     $("module-config-dot").classList.toggle("offline", !healthy);
-    $("module-config-status").textContent = healthy ? "模块环境检查通过" : `${allChecks.filter((item) => item.ok).length}/${allChecks.length} 项配置可用`;
+    $("module-config-status").textContent = healthy ? t("模块环境检查通过") : t("{p0}/{p1} 项配置可用", { p0: allChecks.filter((item) => item.ok).length, p1: allChecks.length });
     $("module-config-path").textContent = config.config_path || "";
     if (window.lucide) window.lucide.createIcons();
   }
@@ -219,7 +261,7 @@
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.moduleConfig = data;
       renderModuleConfig();
-      toast("模块设置已保存；新运行将使用最新配置");
+      toast(t("模块设置已保存；新运行将使用最新配置"));
     } catch (error) { toast(error.message, true); }
     finally { button.disabled = false; }
   }
@@ -227,8 +269,8 @@
   function setModelConfigStatus(configured, baseUrl = "") {
     $("model-config-dot").classList.toggle("offline", !configured);
     $("model-config-status").textContent = configured
-      ? `API Key 已配置${baseUrl ? ` · ${baseUrl}` : ""}`
-      : "尚未配置 API Key";
+      ? t("API Key 已配置{p0}", { p0: baseUrl ? ` · ${baseUrl}` : "" })
+      : t("尚未配置 API Key");
   }
 
   async function saveModelConfig(event) {
@@ -251,7 +293,7 @@
       if (app.state) app.state.chat_available = data.api_key_configured;
       setModelConfigStatus(data.api_key_configured, data.base_url);
       renderChatStatus();
-      toast("模型连接设置已保存");
+      toast(t("模型连接设置已保存"));
       $("model-settings-dialog").close();
     } catch (error) {
       toast(error.message, true);
@@ -295,7 +337,7 @@
         app.selectedStage = null; app.selectedPocket = null; app.structureArtifact = null;
         app.provenance = null; disposeViewers();
         $("result-provenance")?.setAttribute("hidden", "");
-        $("workflow-node-detail").textContent = "本项目暂无运行";
+        $("workflow-node-detail").textContent = t("本项目暂无运行");
       }
       if (!app.projectId && app.state.project?.project_id) app.projectId = app.state.project.project_id;
       setConnection(true);
@@ -337,7 +379,7 @@
     $("save-pricing").disabled = !app.runKey;
     $("rerun-stage").disabled = !app.runKey || !app.selectedStage || state.server?.workflow_running;
     const runPill = $("run-state-pill");
-    runPill.textContent = ({ succeeded: "已完成", failed: "失败", running: "运行中", paused: "已暂停", cancelled: "已取消", waiting_approval: "等待审核", waiting_input: "等待输入", waiting_execution: "等待执行" })[state.status] || (state.run_id ? state.status || "待运行" : "无运行");
+    runPill.textContent = ({ succeeded: t("已完成"), failed: t("失败"), running: t("运行中"), paused: t("已暂停"), cancelled: t("已取消"), waiting_approval: t("等待审核"), waiting_input: t("等待输入"), waiting_execution: t("等待执行") })[state.status] || (state.run_id ? state.status || t("待运行") : t("无运行"));
     runPill.className = `run-state-pill ${state.status || "idle"}`;
     const modelInput = $("chat-model");
     if (document.activeElement !== modelInput) modelInput.value = localStorage.getItem("dock-agent-chat-model") || app.modelConfig?.model || state.model?.model || "gpt-4.1-mini";
@@ -382,7 +424,7 @@
     waiting_execution: "等待执行", stale: "需要重跑"
   };
 
-  function stageStatusLabel(status) { return stageStatusLabels[status] || String(status || "待执行").replaceAll("_", " "); }
+  function stageStatusLabel(status) { return t(stageStatusLabels[status] || String(status || t("待执行")).replaceAll("_", " ")); }
 
   function stageProgress(stage, status) {
     const result = app.state?.stage_results?.[stage] || {};
@@ -392,8 +434,8 @@
     const total = current.total ?? current.count ?? current.total_items;
     if (Number.isFinite(Number(done)) && Number.isFinite(Number(total)) && Number(total) > 0) return `${Number(done)}/${Number(total)}`;
     const artifacts = (app.state?.artifacts?.[stage] || []).length;
-    if (artifacts) return `${artifacts} 个产物`;
-    return status === "succeeded" ? "已记录" : "";
+    if (artifacts) return t("{p0} 个产物", { p0: artifacts });
+    return status === "succeeded" ? t("已记录") : "";
   }
 
   function connectEvents() {
@@ -476,7 +518,7 @@
       `<button type="button" class="stage-action" data-stage-action="${name}" data-stage="${stage}" title="${esc(title)}" aria-label="${esc(title)}"><i data-lucide="${iconName}"></i></button>`;
     const cards = workflowNodes.map(([stage, label, icon], index) => `${
       index ? `<div class="workflow-arrow" data-arrow-after="${esc(workflowNodes[index - 1][0])}"><i data-lucide="arrow-right"></i></div>` : ""
-    }<article class="workflow-stage-node pending" data-workflow-stage="${esc(stage)}" tabindex="0" role="button" aria-pressed="false"><div class="workflow-node-icon"><i data-lucide="${icon}"></i></div><strong>${esc(label)}</strong><span data-stage-status></span><em data-stage-progress hidden></em><div class="workflow-stage-actions">${
+    }<article class="workflow-stage-node pending" data-workflow-stage="${esc(stage)}" tabindex="0" role="button" aria-pressed="false"><div class="workflow-node-icon"><i data-lucide="${icon}"></i></div><strong>${esc(t(label))}</strong><span data-stage-status></span><em data-stage-progress hidden></em><div class="workflow-stage-actions">${
       action("logs", "scroll-text", t("查看日志"), stage)
     }${action("params", "sliders-horizontal", t("查看参数"), stage)
     }${action("rerun", "rotate-ccw", t("从此处重跑"), stage)
@@ -515,9 +557,10 @@
   function updateWorkflowNodes() {
     const world = $("workflow-world");
     if (!world || !app.workflowBuilt) return;
-    workflowNodes.forEach(([stage]) => {
+    workflowNodes.forEach(([stage, title]) => {
       const node = world.querySelector(`[data-workflow-stage="${stage}"]`);
       if (!node) return;
+      node.querySelector("strong").textContent = t(title);
       const status = stageStatus(stage);
       const className = statusClassFor(status);
       // Only touch the DOM when the value actually changed, so a running
@@ -547,6 +590,13 @@
     if (!app.state || !$("workflow-canvas")) return;
     if (!app.workflowBuilt) buildWorkflowGraph();
     updateWorkflowNodes();
+    $("workflow-world").querySelector(".workflow-entry").textContent = t("开始");
+    $("workflow-world").querySelector(".workflow-end").textContent = t("完成");
+    const actionLabels = { logs: t("查看日志"), params: t("查看参数"), rerun: t("从此处重跑"), takeover: t("接管节点") };
+    $("workflow-world").querySelectorAll("[data-stage-action]").forEach((button) => {
+      button.title = t(actionLabels[button.dataset.stageAction]);
+      button.setAttribute("aria-label", button.title);
+    });
     if (!app.workflowCanvas.ready) fitWorkflowCanvas(); else applyWorkflowCanvas();
     const activeStage = workflowNodes.map(([stage]) => stage)
       .find((stage) => ATTENTION_STATUSES.includes(stageStatus(stage)));
@@ -560,12 +610,12 @@
     const recent = app.events.slice(-1)[0]; $("workflow-updated").textContent = recent ? new Date(recent.timestamp).toLocaleTimeString() : t("等待事件");
     const modelEvent = app.events.slice().reverse().find((item) => item.type === "model_started");
     const modelName = modelEvent?.model || app.state.model?.model || "—";
-    $("workflow-model").textContent = "模型 " + modelName;
-    const start = app.events.find((item) => item.type === "run_started")?.timestamp; $("workflow-elapsed").textContent = "耗时 " + (start ? duration(start, app.events.at(-1)?.timestamp) : "—");
+    $("workflow-model").textContent = t("模型 ") + modelName;
+    const start = app.events.find((item) => item.type === "run_started")?.timestamp; $("workflow-elapsed").textContent = t("耗时 ") + (start ? duration(start, app.events.at(-1)?.timestamp) : "—");
     const completed = workflowNodes.filter(([stage]) => ["succeeded", "completed"].includes(stageStatus(stage))).length;
     const active = workflowNodes.find(([stage]) => ["running", "waiting_approval", "waiting_input", "waiting_execution", "failed"].includes(stageStatus(stage)));
     $("workflow-progress").textContent = `${completed}/${workflowNodes.length}`;
-    $("workflow-stage-summary").textContent = active ? `${active[1]} · ${stageStatusLabel(stageStatus(active[0]))}` : app.state.status === "succeeded" ? "全部阶段已完成" : app.state.status === "failed" ? "运行失败，需要处理" : "等待开始";
+    $("workflow-stage-summary").textContent = active ? `${t(active[1])} · ${stageStatusLabel(stageStatus(active[0]))}` : app.state.status === "succeeded" ? t("全部阶段已完成") : app.state.status === "failed" ? t("运行失败，需要处理") : t("等待开始");
     renderWorkflowLineage(); renderEventList(); renderRunFacts();
     renderCosts();
     if (window.lucide) window.lucide.createIcons();
@@ -593,7 +643,7 @@
       const data = await response.json();
       if (!current()) return;
       if (!response.ok) throw new Error(data.error || response.statusText);
-      if (data.run_key !== runKey) throw new Error("参数所属运行不匹配，请刷新后重试");
+      if (data.run_key !== runKey) throw new Error(t("参数所属运行不匹配，请刷新后重试"));
       if (app.parameters?.run_key !== runKey) app.parameterEdits = {};
       app.parameters = data;
       renderStageParameters();
@@ -623,7 +673,7 @@
       control = `<select id="${id}" class="input-control" data-parameter="${esc(item.key)}" ${disabled}>${
         item.choices.map((choice) => `<option value="${esc(choice)}" ${choice === value ? "selected" : ""}>${esc(choice)}</option>`).join("")}</select>`;
     } else if (item.kind === "list") {
-      control = `<textarea id="${id}" class="input-control" rows="2" data-parameter="${esc(item.key)}" placeholder="每行一个" ${disabled}>${esc(Array.isArray(value) ? value.join("\n") : (value || ""))}</textarea>`;
+      control = `<textarea id="${id}" class="input-control" rows="2" data-parameter="${esc(item.key)}" placeholder="${esc(t("每行一个"))}" ${disabled}>${esc(Array.isArray(value) ? value.join("\n") : (value || ""))}</textarea>`;
     } else if (item.kind === "text") {
       control = `<input type="text" id="${id}" class="input-control" data-parameter="${esc(item.key)}" value="${esc(value ?? "")}" ${disabled}>`;
     } else {
@@ -632,9 +682,9 @@
       control = `<input type="number" id="${id}" class="input-control" step="${step}"${bounds} data-parameter="${esc(item.key)}" value="${esc(value ?? "")}" ${disabled}>`;
     }
     return `<div class="parameter-row ${item.kind === "bool" ? "parameter-row-bool" : ""}">
-      <label for="${id}">${esc(item.label)}${item.unit ? ` <small>${esc(item.unit)}</small>` : ""}${changed ? `<span class="parameter-changed" title="已偏离默认值">·</span>` : ""}</label>
+      <label for="${id}">${esc(t(item.label))}${item.unit ? ` <small>${esc(item.unit)}</small>` : ""}${changed ? `<span class="parameter-changed" title="${esc(t("已偏离默认值"))}">·</span>` : ""}</label>
       ${control}
-      ${item.help ? `<p class="parameter-help">${esc(item.help)}</p>` : ""}
+      ${item.help ? `<p class="parameter-help">${esc(t(item.help))}</p>` : ""}
     </div>`;
   }
 
@@ -701,7 +751,7 @@
       const required = app.parameters?.rerun_required;
       const label = workflowNodes.find(([name]) => name === required)?.[1] || required;
       note.hidden = !required;
-      note.textContent = required ? `已保存的参数需要从「${label}」重跑后生效。` : "";
+      note.textContent = required ? t("已保存的参数需要从「{p0}」重跑后生效。", { p0: t(label) }) : "";
       return;
     }
     // Say what a change costs before it is saved: the stage it invalidates
@@ -711,13 +761,13 @@
     const earliest = stages.filter(Boolean).sort((a, b) => order.indexOf(a) - order.indexOf(b))[0];
     const label = workflowNodes.find(([name]) => name === earliest)?.[1] || earliest;
     note.hidden = false;
-    note.textContent = `保存后需要从「${label}」重跑才会生效。`;
+    note.textContent = t("保存后需要从「{p0}」重跑才会生效。", { p0: t(label) });
   }
 
   async function saveParameters() {
     if (!app.runKey || app.parameters?.run_key !== app.runKey || !app.parameters?.editable || app.parameterSaving) return;
     const pending = pendingParameterKeys();
-    if (!pending.length) { toast("参数没有改动"); return; }
+    if (!pending.length) { toast(t("参数没有改动")); return; }
     const projectId = app.projectId, runKey = app.runKey;
     const requestId = ++app.parameterRequestId;
     const current = () => requestId === app.parameterRequestId && projectId === app.projectId && runKey === app.runKey;
@@ -730,11 +780,11 @@
       const data = await response.json();
       if (!current()) return;
       if (!response.ok) throw new Error(data.error || response.statusText);
-      if (data.run_key !== runKey) throw new Error("参数所属运行不匹配，请刷新后重试");
+      if (data.run_key !== runKey) throw new Error(t("参数所属运行不匹配，请刷新后重试"));
       app.parameters = data;
       app.parameterEdits = {};
       const label = workflowNodes.find(([name]) => name === data.rerun_required)?.[1];
-      toast(label ? `参数已保存，从「${label}」重跑后生效` : "参数已保存，将用于下一次执行");
+      toast(label ? t("参数已保存，从「{p0}」重跑后生效", { p0: t(label) }) : t("参数已保存，将用于下一次执行"));
     } catch (error) { if (current()) toast(error.message, true); }
     finally {
       if (current()) { app.parameterSaving = false; renderStageParameters(); }
@@ -770,7 +820,7 @@
     if (action === "takeover") {
       inspectWorkflowStage(stage);
       if (app.state?.server?.workflow_running) sendControl("pause");
-      else toast("已进入节点详情，可在审核面板接管后续决策。");
+      else toast(t("已进入节点详情，可在审核面板接管后续决策。"));
     }
   }
 
@@ -824,8 +874,8 @@
     if (changed) app.parameterEdits = {};
     const label = workflowNodes.find((item) => item[0] === stage)?.[1] || stage;
     const status = stageStatus(stage); const result = app.state.stage_results?.[stage] || {};
-    $("workflow-node-title").textContent = label; $("workflow-node-status").textContent = stageStatusLabel(status);
-    $("workflow-node-detail").innerHTML = `<div class="inspector-fact"><span>状态</span><strong>${esc(stageStatusLabel(status))}</strong></div><div class="inspector-fact"><span>产物</span><strong>${(app.state.artifacts?.[stage] || []).length}</strong></div><div class="inspector-fact"><span>进度</span><strong>${esc(stageProgress(stage, status) || "—")}</strong></div><div class="inspector-fact"><span>最近结果</span><strong>${esc(result.error || result.metadata?.profile || result.metadata?.selected_rank || "已记录在运行清单")}</strong></div>`;
+    $("workflow-node-title").textContent = t(label); $("workflow-node-status").textContent = stageStatusLabel(status);
+    $("workflow-node-detail").innerHTML = `<div class="inspector-fact"><span>${esc(t("状态"))}</span><strong>${esc(stageStatusLabel(status))}</strong></div><div class="inspector-fact"><span>${esc(t("产物"))}</span><strong>${(app.state.artifacts?.[stage] || []).length}</strong></div><div class="inspector-fact"><span>${esc(t("进度"))}</span><strong>${esc(stageProgress(stage, status) || "—")}</strong></div><div class="inspector-fact"><span>${esc(t("最近结果"))}</span><strong>${esc(result.error || result.metadata?.profile || result.metadata?.selected_rank || t("已记录在运行清单"))}</strong></div>`;
     $("rerun-stage").disabled = !app.runKey || app.state.server?.workflow_running;
     renderStageParameters();
   }
@@ -841,9 +891,9 @@
     const detail = isReason
       ? [["Node", "LangGraph reason"], ["Action", "Invoke the bound chat model"], ["Next", "tool_calls → act; otherwise END"], ["Latest model", event?.model || app.state.model?.model || "—"]]
       : [["Node", "LangGraph act"], ["Action", "Execute requested tools in serial order"], ["Next", "Continue → reason; wait/failure/control → END"], ["Latest tool", event?.tool || "—"]];
-    $("workflow-node-title").textContent = title;
+    $("workflow-node-title").textContent = t(title);
     $("workflow-node-status").textContent = String(status).replaceAll("_", " ");
-    $("workflow-node-detail").innerHTML = detail.map(([label, value]) => `<div class="inspector-fact"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+    $("workflow-node-detail").innerHTML = detail.map(([label, value]) => `<div class="inspector-fact"><span>${esc(t(label))}</span><strong>${esc(value)}</strong></div>`).join("");
     $("rerun-stage").disabled = true;
   }
 
@@ -858,8 +908,8 @@
   }
 
   function renderRunFacts() {
-    const state = app.state; const facts = [["运行状态", stageStatusLabel(state.status)], ["当前阶段", workflowNodes.find(([stage]) => stage === state.current_node)?.[1] || state.current_node || "空闲"], ["事件", app.events.length], ["产物", Object.values(state.artifacts || {}).flat().length], ["模型调用", app.events.filter((item) => item.type === "model_started").length], ["工具调用", app.events.filter((item) => item.type === "tool_started").length]];
-    $("run-facts").innerHTML = facts.map(([label, value]) => `<div class="run-fact"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+    const state = app.state; const facts = [[t("运行状态"), stageStatusLabel(state.status)], [t("当前阶段"), t(workflowNodes.find(([stage]) => stage === state.current_node)?.[1] || state.current_node || "空闲")], [t("事件"), app.events.length], [t("产物"), Object.values(state.artifacts || {}).flat().length], [t("模型调用"), app.events.filter((item) => item.type === "model_started").length], [t("工具调用"), app.events.filter((item) => item.type === "tool_started").length]];
+    $("run-facts").innerHTML = facts.map(([label, value]) => `<div class="run-fact"><span>${esc(t(label))}</span><strong>${esc(value)}</strong></div>`).join("");
   }
 
   function renderCosts() {
@@ -884,7 +934,7 @@
       $("run-selector").innerHTML = runs.length ? runs.map((run) => {
         const title = `${run.run_key} · ${run.target_id || run.run_id} · ${run.status || "unknown"}`;
         return `<option value="${esc(run.run_key)}" ${run.run_key === app.runKey ? "selected" : ""} title="${esc(title)}">${esc(run.run_key)}</option>`;
-      }).join("") : `<option value="">本项目暂无运行</option>`;
+      }).join("") : `<option value="">${esc(t("本项目暂无运行"))}</option>`;
       // The run list is scoped to the project, so a run from the project we
       // just left is no longer selectable; fall back to this project's newest.
       if (runs.length && !runs.some((run) => run.run_key === app.runKey)) {
@@ -927,7 +977,7 @@
       await fetchProjects();
       await fetchRuns();
       await fetchState();
-      toast(`已切换到项目 ${data.name}`);
+      toast(t("已切换到项目 {p0}", { p0: data.name }));
     } catch (error) { toast(error.message, true); }
   }
 
@@ -942,10 +992,10 @@
         const ext = entry.name.toLowerCase().split(".").pop();
         const icon = entry.kind === "directory" ? "folder" : disabled ? "file-x-2" : editorModes[ext] ? "file-code-2" : "file-text";
         const title = disabled ? entry.preview_reason || t("无法预览") : entry.kind === "directory" ? t("打开文件夹") : t("打开文件");
-        return `<button class="file-entry ${entry.kind} ${disabled ? "unsupported" : ""}" data-file-path="${esc(entry.path)}" data-file-kind="${entry.kind}" ${disabled ? "disabled" : ""} title="${esc(title)}"><i data-lucide="${icon}"></i><span>${esc(entry.name)}</span>${entry.kind === "file" ? `<small>${formatBytes(entry.size)}${disabled ? " · 不可预览" : ""}</small>` : ""}</button>`;
+        return `<button class="file-entry ${entry.kind} ${disabled ? "unsupported" : ""}" data-file-path="${esc(entry.path)}" data-file-kind="${entry.kind}" ${disabled ? "disabled" : ""} title="${esc(title)}"><i data-lucide="${icon}"></i><span>${esc(entry.name)}</span>${entry.kind === "file" ? `<small>${formatBytes(entry.size)}${disabled ? t(" · 不可预览") : ""}</small>` : ""}</button>`;
       }).join("");
       $("file-tree").innerHTML = parent + rows || `<div class="empty-state">${t("此文件夹为空")}</div>`;
-      if (data.truncated) $("file-tree").insertAdjacentHTML("afterbegin", `<div class="file-list-note">仅显示前 500 项</div>`);
+      if (data.truncated) $("file-tree").insertAdjacentHTML("afterbegin", `<div class="file-list-note">${esc(t("仅显示前 500 项"))}</div>`);
       $("file-tree").querySelectorAll("[data-file-kind]:not(:disabled)").forEach((button) => button.addEventListener("click", () => button.dataset.fileKind === "directory" ? openProjectDirectory(button.dataset.filePath) : openProjectFile(button.dataset.filePath)));
       $("file-tree").querySelector("[data-file-parent]")?.addEventListener("click", () => openProjectDirectory(app.fileDirectory.split("/").slice(0, -1).join("/")));
       if (window.lucide) window.lucide.createIcons();
@@ -992,7 +1042,7 @@
     app.terminal = new window.Terminal({
       allowProposedApi: false, convertEol: true, cursorBlink: true,
       fontFamily: '"DM Mono", monospace', fontSize: 12, scrollback: 3000,
-      theme: { background: "#15191e", foreground: "#d9e1eb", cursor: "#79c99b", selectionBackground: "#354252" }
+      theme: terminalTheme()
     });
     app.terminalFit = new window.FitAddon.FitAddon();
     app.terminal.loadAddon(app.terminalFit);
@@ -1141,13 +1191,18 @@
     renderChatList();
   }
 
+  function chatTitle(chat) {
+    return !chat?.title || (!chat.messages?.length && ["新对话", "New conversation"].includes(chat.title))
+      ? t("新对话") : chat.title;
+  }
+
   function renderChatList() {
     const list = $("chat-list");
     document.querySelectorAll("[data-chat-filter]").forEach((button) => button.classList.toggle("active", button.dataset.chatFilter === app.chatFilter));
     const rows = app.chatSessions.filter((chat) => app.chatFilter === "archived" ? Boolean(chat.archived_at) : !chat.archived_at);
     list.innerHTML = rows.length ? rows.map((chat) =>
-      `<div class="chat-list-row"><button type="button" class="chat-list-item ${chat.chat_id === app.chatId ? "active" : ""}" data-chat-id="${esc(chat.chat_id)}" title="${esc(chat.title)}"><i data-lucide="message-square"></i><span>${esc(chat.title || "新对话")}</span></button><button type="button" class="chat-archive-button" data-chat-archive="${esc(chat.chat_id)}" title="${chat.archived_at ? "恢复对话" : "归档对话"}" aria-label="${chat.archived_at ? "恢复对话" : "归档对话"}"><i data-lucide="${chat.archived_at ? "archive-restore" : "archive"}"></i></button></div>`).join("") :
-      `<div class="chat-list-empty">${app.chatFilter === "archived" ? "暂无归档对话" : "暂无活跃对话"}</div>`;
+      `<div class="chat-list-row"><button type="button" class="chat-list-item ${chat.chat_id === app.chatId ? "active" : ""}" data-chat-id="${esc(chat.chat_id)}" title="${esc(chatTitle(chat))}"><i data-lucide="message-square"></i><span>${esc(chatTitle(chat))}</span></button><button type="button" class="chat-archive-button" data-chat-archive="${esc(chat.chat_id)}" title="${chat.archived_at ? t("恢复对话") : t("归档对话")}" aria-label="${chat.archived_at ? t("恢复对话") : t("归档对话")}"><i data-lucide="${chat.archived_at ? "archive-restore" : "archive"}"></i></button></div>`).join("") :
+      `<div class="chat-list-empty">${app.chatFilter === "archived" ? t("暂无归档对话") : t("暂无活跃对话")}</div>`;
     list.querySelectorAll("[data-chat-id]").forEach((button) => button.addEventListener("click", () => selectChat(button.dataset.chatId)));
     list.querySelectorAll("[data-chat-archive]").forEach((button) => button.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -1156,7 +1211,7 @@
     }));
     if (window.lucide) window.lucide.createIcons();
     const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
-    $("project-title").textContent = current?.title || "新对话";
+    $("project-title").textContent = chatTitle(current);
   }
 
   async function updateChatArchive(chatId, archived) {
@@ -1193,15 +1248,15 @@
   function renderChatStatus() {
     if (!$('chat-status')) return;
     const ready = Boolean(app.state?.chat_available);
-    $("chat-status").textContent = ready ? "模型已连接" : "模型未连接";
+    $("chat-status").textContent = ready ? t("模型已连接") : t("模型未连接");
     $("chat-status").classList.toggle("chat-status-offline", !ready);
   }
 
   function renderChat() {
     const messages = app.chatHistory || [];
-    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? `<span class="chat-user-avatar">你</span>` : `<span class="chat-avatar">DS</span>DrugStudio`}</div><div class="chat-content">${esc(item.content).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>从一个研究问题开始</h2><p>我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="检查当前项目的结构和配体输入">检查当前项目的输入</button><button type="button" data-chat-suggestion="解释当前工作流下一步需要什么">解释下一步</button><button type="button" data-chat-suggestion="查看当前项目有哪些结果和风险">查看结果与风险</button></div></div>`;
+    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? `<span class="chat-user-avatar">${esc(t("你"))}</span>` : `<span class="chat-avatar">DS</span>DrugStudio`}</div><div class="chat-content">${esc(item.content).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个研究问题开始"))}</h2><p>${esc(t("我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("解释当前工作流下一步需要什么"))}">${esc(t("解释下一步"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`;
     $("chat-messages").insertAdjacentHTML("beforeend", pendingActionCard());
-    if (app.chatBusy) $("chat-messages").insertAdjacentHTML("beforeend", `<div class="chat-typing" aria-live="polite"><span class="chat-avatar">DS</span><span class="typing-dots"><i></i><i></i><i></i></span><span>正在思考</span></div>`);
+    if (app.chatBusy) $("chat-messages").insertAdjacentHTML("beforeend", `<div class="chat-typing" aria-live="polite"><span class="chat-avatar">DS</span><span class="typing-dots"><i></i><i></i><i></i></span><span>${esc(t("正在思考"))}</span></div>`);
     $("approve-action")?.addEventListener("click", () => decideChatAction(true));
     $("reject-action")?.addEventListener("click", () => decideChatAction(false));
     $("chat-messages").querySelectorAll("[data-chat-suggestion]").forEach((button) => button.addEventListener("click", () => {
@@ -1212,7 +1267,7 @@
     if (window.lucide) window.lucide.createIcons();
     $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
     const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
-    $("project-title").textContent = current?.title || t("新对话");
+    $("project-title").textContent = chatTitle(current);
   }
 
   // A turn can come back suspended: the model asked to run a command or
@@ -1234,7 +1289,7 @@
       ? `<pre class="pending-command">${esc(pending.command)}</pre>${pending.cwd ? `<div class="pending-meta">${t("工作目录")}: ${esc(pending.cwd)}</div>` : ""}`
       : `<div class="pending-meta">${t("写入文件")}: <code>${esc(pending.path)}</code> · ${pending.content_bytes} ${t("字节")}</div>${pending.content_preview ? `<pre class="pending-command">${esc(pending.content_preview)}</pre>` : ""}`;
     return `<article class="pending-action" id="pending-action">
-      <div class="pending-heading"><i data-lucide="shield-alert"></i><strong>${t(isCommand ? "AI 请求执行命令" : "AI 请求写入文件")}</strong></div>
+      <div class="pending-heading"><i data-lucide="shield-alert"></i><strong>${t(isCommand ? t("AI 请求执行命令") : t("AI 请求写入文件"))}</strong></div>
       ${detail}
       <label class="pending-reason">${t("理由（拒绝时会转达给 AI）")}<input id="pending-reason" class="input-control" type="text" placeholder="${t("可选")}"></label>
       <div class="pending-actions">
@@ -1368,19 +1423,19 @@
     const items = structureCandidates();
     const previous = app.structureArtifact;
     const select = $("structure-select");
-    select.innerHTML = items.length ? items.map((item, index) => `<option value="${index}">${esc(item.kind)} · ${esc(item.path.split("/").pop())}</option>`).join("") : `<option value="">No structure artifact</option>`;
+    select.innerHTML = items.length ? items.map((item, index) => `<option value="${index}">${esc(item.kind)} · ${esc(item.path.split("/").pop())}</option>`).join("") : `<option value="">${t("暂无结构")}</option>`;
     app.structureArtifact = items.find(item => item.path === app.structureArtifact?.path) || items[0] || null;
     if (previous && (previous.path !== app.structureArtifact?.path || previous.sha256 !== app.structureArtifact?.sha256)) disposeViewers();
     if (app.structureArtifact) select.value = String(items.indexOf(app.structureArtifact));
     $("structure-file").textContent = app.structureArtifact?.path || "—";
     const quality = app.state.stage_results?.structure?.metadata?.quality || app.state.stage_results?.receptor?.metadata?.structure_quality || app.state.stage_results?.pocket?.metadata?.structure_quality;
     if (quality) {
-      $("structure-quality-title").textContent = quality.gate === "pass" || quality.status === "pass" ? "结构质量通过" : "结构需要关注";
-      const chips = [["来源", app.structureArtifact?.metadata?.source || app.structureArtifact?.kind || "—"], ["链数", quality.chain_count ?? "—"], ["缺失残基", quality.missing_residues ?? quality.missing_residue_count ?? "—"], ["分辨率", quality.resolution_A != null ? `${fmt(quality.resolution_A, 2)} Å` : "—"]];
-      $("structure-quality-chips").innerHTML = chips.map(([label, value]) => `<span class="quality-chip"><small>${esc(label)}</small><strong>${esc(value)}</strong></span>`).join("");
+      $("structure-quality-title").textContent = quality.gate === "pass" || quality.status === "pass" ? t("结构质量通过") : t("结构需要关注");
+      const chips = [[t("来源"), app.structureArtifact?.metadata?.source || app.structureArtifact?.kind || "—"], [t("链数"), quality.chain_count ?? "—"], [t("缺失残基"), quality.missing_residues ?? quality.missing_residue_count ?? "—"], [t("分辨率"), quality.resolution_A != null ? `${fmt(quality.resolution_A, 2)} Å` : "—"]];
+      $("structure-quality-chips").innerHTML = chips.map(([label, value]) => `<span class="quality-chip"><small>${esc(t(label))}</small><strong>${esc(value)}</strong></span>`).join("");
     } else {
-      $("structure-quality-title").textContent = items.length ? "已获得结构，等待质量评估" : "等待结构产物";
-      $("structure-quality-chips").innerHTML = `<span class="quality-chip muted">质量数据将在结构阶段完成后显示</span>`;
+      $("structure-quality-title").textContent = items.length ? t("已获得结构，等待质量评估") : t("等待结构产物");
+      $("structure-quality-chips").innerHTML = `<span class="quality-chip muted">${esc(t("质量数据将在结构阶段完成后显示"))}</span>`;
     }
   }
 
@@ -1392,7 +1447,7 @@
   function renderPoseChoices() {
     const poses = poseArtifacts();
     const select = $("pose-select");
-    select.innerHTML = `<option value="">No docked pose overlay</option>` + poses.map((item, index) => `<option value="${index}">${esc(item.metadata?.relative_output || item.path.split("/").pop())}</option>`).join("");
+    select.innerHTML = `<option value="">${t("暂无对接姿态")}</option>` + poses.map((item, index) => `<option value="${index}">${esc(item.metadata?.relative_output || item.path.split("/").pop())}</option>`).join("");
   }
 
   function currentPockets() {
@@ -1407,18 +1462,18 @@
       const selected = app.selectedPocket?.rank === pocket.rank || (!app.selectedPocket && pocket.selected);
       return `<div class="pocket-card ${selected ? "selected" : ""}" data-pocket-rank="${pocket.rank}">
         <div class="pocket-row"><span class="pocket-name">${esc(pocket.name || `Pocket ${pocket.rank}`)}</span><span class="pocket-score">P2Rank score ${fmt(pocket.p2rank_score ?? pocket.score, 2)}</span></div>
-        <div class="pocket-meta"><span>rank ${esc(pocket.rank)}</span><span>predictors ${(pocket.sources || []).join(" + ") || "P2Rank"}</span><span>P2Rank p ${fmt(pocket.p2rank_probability ?? pocket.probability, 2)}</span>${pocket.fpocket_druggability_score != null ? `<span>fpocket druggability ${fmt(pocket.fpocket_druggability_score, 2)}</span>` : ""}<span>${(pocket.residue_ids || []).length} residues</span><span>${esc(String(pocket.evidence_class || "computational_only").replaceAll("_", " "))}</span>${pocket.reference_site_overlap_count ? `<span>${pocket.reference_site_overlap_count} reference-site residues overlap</span>` : ""}${pocket.predictor_center_distance_A != null ? `<span>centers agree within ${fmt(pocket.predictor_center_distance_A, 1)} Å</span>` : ""}${pocket.human_review_recommended ? `<span>review recommended</span>` : ""}</div>
+        <div class="pocket-meta"><span>rank ${esc(pocket.rank)}</span><span>predictors ${(pocket.sources || []).join(" + ") || "P2Rank"}</span><span>P2Rank p ${fmt(pocket.p2rank_probability ?? pocket.probability, 2)}</span>${pocket.fpocket_druggability_score != null ? `<span>fpocket druggability ${fmt(pocket.fpocket_druggability_score, 2)}</span>` : ""}<span>${(pocket.residue_ids || []).length} residues</span><span>${esc(String(pocket.evidence_class || "computational_only").replaceAll("_", " "))}</span>${pocket.reference_site_overlap_count ? `<span>${pocket.reference_site_overlap_count} reference-site residues overlap</span>` : ""}${pocket.predictor_center_distance_A != null ? `<span>centers agree within ${fmt(pocket.predictor_center_distance_A, 1)} Å</span>` : ""}${pocket.human_review_recommended ? `<span>${t("建议审核")}</span>` : ""}</div>
       </div>`;
     }).join("") : referenceResidues.length
-      ? `<button class="pocket-card reference-site-card" type="button" data-reference-site><div class="pocket-row"><span class="pocket-name">Reference binding site</span><span class="pocket-score">Input provided</span></div><div class="pocket-meta"><span>${referenceResidues.length} specified residues</span><span>Not an independently predicted pocket</span></div></button>`
-      : `<div class="empty-state">暂无口袋预测或参考位点。</div>`;
+      ? `<button class="pocket-card reference-site-card" type="button" data-reference-site><div class="pocket-row"><span class="pocket-name">${t("参考结合位点")}</span><span class="pocket-score">${t("来自输入")}</span></div><div class="pocket-meta"><span>${referenceResidues.length} specified residues</span><span>${t("并非独立预测的口袋")}</span></div></button>`
+      : `<div class="empty-state">${esc(t("暂无口袋预测或参考位点。"))}</div>`;
     const quality = app.state.stage_results?.pocket?.metadata?.structure_quality;
     const qualityHtml = quality ? `<div class="quality-pill">Structure QC: ${esc(quality.gate)} · ${quality.chain_count} chains · median CA B ${fmt(quality.ca_bfactor_median, 1)}${quality.review_flags?.length ? ` · ${quality.review_flags.length} review flags` : ""}</div>` : "";
     $("pocket-list").innerHTML = qualityHtml + html;
     $("review-pocket-list").innerHTML = pockets.length ? pockets.map((pocket) => {
       const selected = app.selectedPocket?.rank === pocket.rank;
-      return `<div class="review-pocket-card ${selected ? "selected" : ""}" data-review-rank="${pocket.rank}"><span class="review-rank">${pocket.rank}</span><div><strong>${esc(pocket.name || `Pocket ${pocket.rank}`)}</strong><small>${(pocket.residue_ids || []).slice(0, 5).map(esc).join(" · ") || "No residue labels"} · ${(pocket.sources || ["P2Rank"]).join(" + ")}${pocket.predictor_center_distance_A != null ? ` · centers agree ${fmt(pocket.predictor_center_distance_A, 1)} Å` : ""}${pocket.human_review_recommended ? " · review recommended" : ""}</small></div><span class="pocket-score">${fmt(pocket.p2rank_probability ?? pocket.score, 2)}</span></div>`;
-    }).join("") : `<div class="empty-state">暂无候选口袋。</div>`;
+      return `<div class="review-pocket-card ${selected ? "selected" : ""}" data-review-rank="${pocket.rank}"><span class="review-rank">${pocket.rank}</span><div><strong>${esc(pocket.name || `Pocket ${pocket.rank}`)}</strong><small>${(pocket.residue_ids || []).slice(0, 5).map(esc).join(" · ") || t("无残基标签")} · ${(pocket.sources || ["P2Rank"]).join(" + ")}${pocket.predictor_center_distance_A != null ? ` · centers agree ${fmt(pocket.predictor_center_distance_A, 1)} Å` : ""}${pocket.human_review_recommended ? ` · ${t("建议审核")}` : ""}</small></div><span class="pocket-score">${fmt(pocket.p2rank_probability ?? pocket.score, 2)}</span></div>`;
+    }).join("") : `<div class="empty-state">${esc(t("暂无候选口袋。"))}</div>`;
     document.querySelectorAll("[data-pocket-rank]").forEach((node) => node.addEventListener("click", () => selectPocket(Number(node.dataset.pocketRank))));
     document.querySelectorAll("[data-review-rank]").forEach((node) => node.addEventListener("click", () => selectPocket(Number(node.dataset.reviewRank))));
     $("pocket-list").querySelector("[data-reference-site]")?.addEventListener("click", () => setProteinStyle("site"));
@@ -1445,13 +1500,13 @@
     if (!pocket) {
       const residues = app.state.target?.binding_site_residues || [];
       $("pocket-detail").innerHTML = residues.length
-        ? `<div class="detail-item"><label>REFERENCE SITE</label><strong>Provided in target input</strong></div><div class="detail-item"><label>RESIDUES</label><strong>${residues.length}</strong></div><div class="residue-list">${residues.map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("")}</div>`
+        ? `<div class="detail-item"><label>${t("参考位点")}</label><strong>${t("由靶点输入提供")}</strong></div><div class="detail-item"><label>${t("残基")}</label><strong>${residues.length}</strong></div><div class="residue-list">${residues.map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("")}</div>`
         : `<span class="muted">${t("没有预测口袋或参考位点残基。")}</span>`;
       return;
     }
     const center = pocket.box?.center || pocket.center || [];
     const size = pocket.box?.size || [];
-    $("pocket-detail").innerHTML = `<div class="detail-item"><label>CENTER X / Y / Z</label><strong class="mono">${center.map((n) => fmt(n, 2)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>BOX Å</label><strong class="mono">${size.map((n) => fmt(n, 1)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>PROBABILITY</label><strong>${fmt(pocket.probability, 3)}</strong></div><div class="detail-item"><label>SURFACE POINTS</label><strong>${esc(pocket.surface_points ?? "—")}</strong></div><div class="residue-list">${(pocket.residue_ids || []).map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("") || `<span class="muted">${t("无残基标签")}</span>`}</div>`;
+    $("pocket-detail").innerHTML = `<div class="detail-item"><label>${t("中心 X / Y / Z")}</label><strong class="mono">${center.map((n) => fmt(n, 2)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>${t("盒尺寸 Å")}</label><strong class="mono">${size.map((n) => fmt(n, 1)).join(" · ") || "—"}</strong></div><div class="detail-item"><label>${t("概率")}</label><strong>${fmt(pocket.probability, 3)}</strong></div><div class="detail-item"><label>${t("表面点")}</label><strong>${esc(pocket.surface_points ?? "—")}</strong></div><div class="residue-list">${(pocket.residue_ids || []).map((item) => `<span class="residue-chip">${esc(item)}</span>`).join("") || `<span class="muted">${t("无残基标签")}</span>`}</div>`;
   }
 
   function structureCoordinateKey() {
@@ -1493,7 +1548,7 @@
     try {
       app.proteinViewer?.clear?.();
       $("protein-viewer").innerHTML = "";
-      const viewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: "#0e1116", antialias: true });
+      const viewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--surface-2").trim(), antialias: true });
       app.proteinViewer = viewer; app.boxShapes = [];
       viewer.addModel(text, "pdb");
       setProteinStyle("cartoon");
@@ -1547,7 +1602,7 @@
     const protein = { model: 0 };
     const siteSelections = style === "site" ? siteResidueSelections() : [];
     if (style === "site" && !siteSelections.length) {
-      toast("当前没有预测口袋或参考结合位点残基可显示。", true);
+      toast(t("当前没有预测口袋或参考结合位点残基可显示。"), true);
       return;
     }
     try {
@@ -1590,7 +1645,7 @@
       app.proteinStyle = "cartoon";
       document.querySelectorAll("[data-protein-style]").forEach((button) => button.classList.toggle("active", button.dataset.proteinStyle === "cartoon"));
       $("viewer-hint").textContent = t("PDB 坐标系");
-      toast(error.message || "无法显示结合位点。", true);
+      toast(error.message || t("无法显示结合位点。"), true);
     }
   }
 
@@ -1712,28 +1767,28 @@
     const summary = boxCoverage();
     if (readout) {
       readout.hidden = !app.boxVisible || !summary || Boolean(summary.unavailable);
-      if (summary && !summary.unavailable) readout.textContent = `与盒相交残基 ${summary.residues}`;
+      if (summary && !summary.unavailable) readout.textContent = t("与盒相交残基 {p0}", { p0: summary.residues });
     }
     if (!coverage) return;
     if (!summary) {
-      coverage.innerHTML = `<span class="muted">填写盒中心和正的盒尺寸后显示覆盖情况。</span>`;
+      coverage.innerHTML = `<span class="muted">${esc(t("填写盒中心和正的盒尺寸后显示覆盖情况。"))}</span>`;
       return;
     }
     if (summary.unavailable) {
       // The numbers are fine; we just have no coordinates to measure against.
-      coverage.innerHTML = `<span class="muted">尚未载入结构坐标，暂时无法统计盒内残基。</span>`;
+      coverage.innerHTML = `<span class="muted">${esc(t("尚未载入结构坐标，暂时无法统计盒内残基。"))}</span>`;
       return;
     }
     // A key residue outside the box is a warning, not a block: the reviewer
     // may be deliberately targeting a sub-pocket.
     const warningList = (labels, description) => labels.length
       ? `<div class="box-warning">${labels.length} ${description}：${labels.slice(0, 6).map(esc).join(" · ")}${labels.length > 6 ? " …" : ""}</div>` : "";
-    const warning = warningList(summary.missing, "个关键残基落在盒外")
-      + warningList(summary.partial, "个关键残基仅部分原子在盒内")
-      + warningList(summary.unresolved, "个关键残基未找到坐标或标签无法识别");
+    const warning = warningList(summary.missing, t("个关键残基落在盒外"))
+      + warningList(summary.partial, t("个关键残基仅部分原子在盒内"))
+      + warningList(summary.unresolved, t("个关键残基未找到坐标或标签无法识别"));
     const complete = !warning && summary.expected
-      ? `<div class="box-ok">${summary.expected} 个关键残基的已载入原子全部在盒内</div>` : "";
-    coverage.innerHTML = `<div class="box-stat"><span>与盒相交残基</span><strong>${summary.residues}</strong></div><small class="muted">按当前结构中已载入的原子统计；相交表示至少一个原子在盒内。</small>${warning}${complete}`;
+      ? `<div class="box-ok">${summary.expected} ${esc(t("个关键残基的已载入原子全部在盒内"))}</div>` : "";
+    coverage.innerHTML = `<div class="box-stat"><span>${esc(t("与盒相交残基"))}</span><strong>${summary.residues}</strong></div><small class="muted">${esc(t("按当前结构中已载入的原子统计；相交表示至少一个原子在盒内。"))}</small>${warning}${complete}`;
     if (window.lucide) window.lucide.createIcons();
   }
 
@@ -1777,7 +1832,7 @@
     const ligands = app.state.ligands || [];
     const select = $("ligand-select");
     const selected = select.value;
-    select.innerHTML = ligands.length ? ligands.map((ligand, index) => `<option value="${index}">${esc(ligand.ligand_id)}</option>`).join("") : `<option value="">No ligands</option>`;
+    select.innerHTML = ligands.length ? ligands.map((ligand, index) => `<option value="${index}">${esc(ligand.ligand_id)}</option>`).join("") : `<option value="">${t("暂无配体")}</option>`;
     if (selected && ligands[Number(selected)]) select.value = selected;
     if (ligands.length && $("view-ligand").classList.contains("active") && !app.ligandViewer) loadLigand(Number(select.value || 0));
   }
@@ -1803,13 +1858,13 @@
       if (!response.ok) throw new Error(`${t("结构请求失败")} (${response.status})`);
       const text = await response.text();
       $("ligand-viewer").innerHTML = "";
-      app.ligandViewer = window.$3Dmol.createViewer($("ligand-viewer"), { backgroundColor: "#0e1116", antialias: true });
+      app.ligandViewer = window.$3Dmol.createViewer($("ligand-viewer"), { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--surface-2").trim(), antialias: true });
       const format = artifact.path.toLowerCase().endsWith(".sdf") ? "sdf" : "pdb";
       app.ligandViewer.addModel(text, format);
       app.ligandViewer.setStyle({}, { stick: { radius: .19, colorscheme: "Jmol" }, sphere: { scale: .28, colorscheme: "Jmol" } });
       app.ligandViewer.zoomTo(); app.ligandViewer.render();
       app.ligandKey = artifact.path;
-      $("ligand-atoms").textContent = reportLigand?.properties?.heavy_atoms ? `${reportLigand.properties.heavy_atoms} heavy atoms` : "3D conformer";
+      $("ligand-atoms").textContent = reportLigand?.properties?.heavy_atoms ? `${reportLigand.properties.heavy_atoms} heavy atoms` : t("3D 构象");
     } catch (error) { showViewerMessage("ligand-viewer", `${t("无法载入小分子")}：${error.message || String(error) || t("3D 渲染失败")}`); }
   }
 
@@ -1826,10 +1881,10 @@
     const props = item?.properties;
     $("ligand-quality").textContent = props ? (item.status === "succeeded" ? t("质控通过") : String(item.status || "reported").toUpperCase()) : t("无报告");
     if (!props) { $("ligand-properties").innerHTML = `<div class="empty-state">${t("暂无评估报告。")}</div>`; $("ligand-alerts").innerHTML = ""; return; }
-    const rows = [["分子量", `${fmt(props.mw)} Da`], ["cLogP", fmt(props.logp)], ["TPSA", `${fmt(props.tpsa)} Å²`], ["氢键供体 / 受体", `${props.hbd ?? "—"} / ${props.hba ?? "—"}`], ["QED", fmt(props.qed, 3)], ["Csp3 比例", fmt(props.fraction_csp3, 3)], ["可旋转键", props.rotatable_bonds ?? "—"], ["Lipinski", (props.lipinski_violations || []).length ? `${props.lipinski_violations.length} 项超限` : "通过"]];
+    const rows = [[t("分子量"), `${fmt(props.mw)} Da`], ["cLogP", fmt(props.logp)], ["TPSA", `${fmt(props.tpsa)} Å²`], [t("氢键供体 / 受体"), `${props.hbd ?? "—"} / ${props.hba ?? "—"}`], ["QED", fmt(props.qed, 3)], [t("Csp3 比例"), fmt(props.fraction_csp3, 3)], [t("可旋转键"), props.rotatable_bonds ?? "—"], ["Lipinski", (props.lipinski_violations || []).length ? t("{p0} 项超限", { p0: props.lipinski_violations.length }) : t("通过")]];
     $("ligand-properties").innerHTML = rows.map(([label, value]) => `<div class="property-row"><label>${label}</label><strong>${esc(value)}</strong></div>`).join("");
     const alerts = [...(props.alerts?.pains || []).map((item) => `PAINS · ${item}`), ...(props.alerts?.brenk || []).map((item) => `Brenk · ${item}`)];
-    $("ligand-alerts").innerHTML = alerts.length ? alerts.map((item) => `<div class="alert"><i data-lucide="triangle-alert"></i>${esc(item)}</div>`).join("") : `<div class="alert" style="color:var(--teal)"><i data-lucide="circle-check"></i>未发现 PAINS / Brenk 风险</div>`;
+    $("ligand-alerts").innerHTML = alerts.length ? alerts.map((item) => `<div class="alert"><i data-lucide="triangle-alert"></i>${esc(item)}</div>`).join("") : `<div class="alert" style="color:var(--teal)"><i data-lucide="circle-check"></i>${esc(t("未发现 PAINS / Brenk 风险"))}</div>`;
   }
 
   function renderResults() {
@@ -1838,18 +1893,18 @@
     const ligands = report.ligands || [];
     const completed = tasks.filter((task) => task.status === "succeeded").length;
     const pockets = currentPockets();
-    const metrics = [["对接任务", `${completed}/${tasks.length}`, "flask-conical"], ["候选口袋", pockets.length, "target"], ["最佳评分", tasks.length ? fmt(Math.min(...tasks.map((task) => Number(task.best_pose?.affinity_kcal_mol ?? task.score ?? NaN)).filter(Number.isFinite)), 2) : "—", "trending-down"], ["小分子", ligands.length || app.state.ligands?.length || 0, "atom"]];
+    const metrics = [[t("对接任务"), `${completed}/${tasks.length}`, "flask-conical"], [t("候选口袋"), pockets.length, "target"], [t("最佳评分"), tasks.length ? fmt(Math.min(...tasks.map((task) => Number(task.best_pose?.affinity_kcal_mol ?? task.score ?? NaN)).filter(Number.isFinite)), 2) : "—", "trending-down"], [t("小分子"), ligands.length || app.state.ligands?.length || 0, "atom"]];
     $("metric-row").innerHTML = metrics.map(([label, value, icon]) => `<div class="metric"><div><label>${label}</label><strong>${esc(value)}</strong></div><span class="metric-icon"><i data-lucide="${icon}"></i></span></div>`).join("");
     const firstTask = tasks.find((task) => task.best_pose || task.score != null) || tasks[0];
     const score = firstTask ? (firstTask.best_pose?.affinity_kcal_mol ?? firstTask.score_kcal_mol ?? firstTask.score) : null;
-    const ligandName = firstTask?.state_id || firstTask?.ligand_id || ligands[0]?.ligand_id || "当前配体";
-    const engine = firstTask?.engine || firstTask?.engine_version || report.engine || "对接引擎";
+    const ligandName = firstTask?.state_id || firstTask?.ligand_id || ligands[0]?.ligand_id || t("当前配体");
+    const engine = firstTask?.engine || firstTask?.engine_version || report.engine || t("对接引擎");
     const sourceArtifact = artifactsByKind("assessment_data").at(-1) || artifactsByKind("docking_output").at(-1);
-    $("result-explanation").innerHTML = `<div class="explanation-item"><span>它是什么</span><strong>${esc(ligandName)} 的对接姿态${score != null ? `，评分 ${fmt(score, 3)} kcal/mol` : "，等待评分"}</strong></div><div class="explanation-item"><span>它是怎么得到的</span><strong>来自当前项目的结构、口袋和配体产物；${esc(engine)} 的版本与参数记录在运行详情中。</strong><button type="button" class="explanation-link" data-provenance-artifact="${esc(sourceArtifact?.artifact_id || "")}">查看来源链</button></div><div class="explanation-item"><span>下一步可以做什么</span><div class="explanation-actions"><button type="button" class="secondary-button" data-open-view="structure">查看姿态</button><button type="button" class="secondary-button" data-open-view="review">审核口袋</button></div></div>`;
+    $("result-explanation").innerHTML = `<div class="explanation-item"><span>${esc(t("它是什么"))}</span><strong>${esc(ligandName)} ${esc(t("的对接姿态"))}${score != null ? t("，评分 {p0} kcal/mol", { p0: fmt(score, 3) }) : t("，等待评分")}</strong></div><div class="explanation-item"><span>${esc(t("它是怎么得到的"))}</span><strong>${esc(t("来自当前项目的结构、口袋和配体产物；"))}${esc(engine)} ${esc(t("的版本与参数记录在运行详情中。"))}</strong><button type="button" class="explanation-link" data-provenance-artifact="${esc(sourceArtifact?.artifact_id || "")}">${esc(t("查看来源链"))}</button></div><div class="explanation-item"><span>${esc(t("下一步可以做什么"))}</span><div class="explanation-actions"><button type="button" class="secondary-button" data-open-view="structure">${esc(t("查看姿态"))}</button><button type="button" class="secondary-button" data-open-view="review">${esc(t("审核口袋"))}</button></div></div>`;
     $("result-explanation").querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.openView)));
     $("result-explanation").querySelectorAll("[data-provenance-artifact]").forEach((button) => button.addEventListener("click", () => loadProvenance(button.dataset.provenanceArtifact)));
-    $("result-attempt").textContent = report.docking_attempt ? `第 ${report.docking_attempt} 次运行` : "最近一次报告";
-    $("task-table").innerHTML = tasks.length ? tasks.map((task, index) => { const score = task.best_pose?.affinity_kcal_mol ?? task.score_kcal_mol ?? task.score; return `<tr data-result-row="${index}" tabindex="0"><td>${esc(task.state_id || task.ligand_id || "—")}</td><td class="mono-cell">${esc(task.task_id || "—")}</td><td class="score">${fmt(score, 3)} kcal/mol</td><td>${esc(task.qc_pass_count ?? "—")}</td><td><span class="state-tag ${task.status === "succeeded" || task.status === "complete" ? "success" : task.status === "failed" ? "failed" : ""}">${esc(task.status || "—")}</span></td></tr>`; }).join("") : `<tr><td colspan="5" class="muted">暂无对接任务。</td></tr>`;
+    $("result-attempt").textContent = report.docking_attempt ? t("第 {p0} 次运行", { p0: report.docking_attempt }) : t("最近一次报告");
+    $("task-table").innerHTML = tasks.length ? tasks.map((task, index) => { const score = task.best_pose?.affinity_kcal_mol ?? task.score_kcal_mol ?? task.score; return `<tr data-result-row="${index}" tabindex="0"><td>${esc(task.state_id || task.ligand_id || "—")}</td><td class="mono-cell">${esc(task.task_id || "—")}</td><td class="score">${fmt(score, 3)} kcal/mol</td><td>${esc(task.qc_pass_count ?? "—")}</td><td><span class="state-tag ${task.status === "succeeded" || task.status === "complete" ? "success" : task.status === "failed" ? "failed" : ""}">${esc(task.status || "—")}</span></td></tr>`; }).join("") : `<tr><td colspan="5" class="muted">${esc(t("暂无对接任务。"))}</td></tr>`;
     $("property-table").innerHTML = ligands.length ? ligands.map((item) => { const p = item.properties || {}; const alerts = (p.alerts?.pains || []).length + (p.alerts?.brenk || []).length; return `<tr><td>${esc(item.ligand_id)}</td><td>${fmt(p.mw)}</td><td>${fmt(p.logp)}</td><td>${fmt(p.tpsa)}</td><td>${fmt(p.qed, 3)}</td><td>${alerts ? `<span style="color:var(--amber)">${alerts}</span>` : `<span style="color:var(--teal)">0</span>`}</td></tr>`; }).join("") : `<tr><td colspan="6" class="muted">${t("暂无分子评估结果。")}</td></tr>`;
     $("limitations-list").innerHTML = (report.limitations || [t("暂无评估报告。")]).map((item) => `<div class="limitation">${esc(item)}</div>`).join("");
     document.querySelectorAll("[data-result-row]").forEach((row) => row.addEventListener("click", () => showView("structure")));
@@ -1859,7 +1914,7 @@
     const panel = $("result-provenance");
     if (!panel) return;
     panel.hidden = false;
-    panel.innerHTML = `<div class="provenance-heading"><div><div class="eyebrow">PROVENANCE</div><strong>正在读取来源链…</strong></div></div>`;
+    panel.innerHTML = `<div class="provenance-heading"><div><div class="eyebrow">${t("来源链")}</div><strong>${esc(t("正在读取来源链…"))}</strong></div></div>`;
     try {
       const response = await fetch(scoped("/api/provenance", { artifact_id: artifactId || "" }), { cache: "no-store" });
       const data = await response.json();
@@ -1867,11 +1922,11 @@
       app.provenance = data;
       const chain = data.chain || [];
       const stages = data.stages || [];
-      panel.innerHTML = `<div class="provenance-heading"><div><div class="eyebrow">PROVENANCE</div><strong>${esc(data.run_id || "当前运行")} · ${chain.length} 个来源产物</strong></div><button type="button" class="icon-button" data-close-provenance title="收起来源链" aria-label="收起来源链"><i data-lucide="x"></i></button></div><div class="provenance-chain">${chain.length ? chain.map((item, index) => `<div class="provenance-item"><span class="provenance-index">${index + 1}</span><div><strong>${esc(item.kind || "artifact")}</strong><small>${esc(item.stage || "—")} · ${esc(item.path || "—")}</small></div><span class="provenance-state ${item.exists ? "ok" : "missing"}">${item.exists ? "存在" : "缺失"}</span></div>`).join("") : `<div class="empty-state">没有找到可追溯产物。</div>`}</div><div class="provenance-stages">${stages.map((item) => `<span>${esc(item.stage)} · ${esc(stageStatusLabel(item.status))}</span>`).join("")}</div>`;
+      panel.innerHTML = `<div class="provenance-heading"><div><div class="eyebrow">${t("来源链")}</div><strong>${esc(data.run_id || t("当前运行"))} · ${chain.length} ${esc(t("个来源产物"))}</strong></div><button type="button" class="icon-button" data-close-provenance title="${esc(t("收起来源链"))}" aria-label="${esc(t("收起来源链"))}"><i data-lucide="x"></i></button></div><div class="provenance-chain">${chain.length ? chain.map((item, index) => `<div class="provenance-item"><span class="provenance-index">${index + 1}</span><div><strong>${esc(item.kind || "artifact")}</strong><small>${esc(item.stage || "—")} · ${esc(item.path || "—")}</small></div><span class="provenance-state ${item.exists ? "ok" : "missing"}">${item.exists ? t("存在") : t("缺失")}</span></div>`).join("") : `<div class="empty-state">${esc(t("没有找到可追溯产物。"))}</div>`}</div><div class="provenance-stages">${stages.map((item) => `<span>${esc(item.stage)} · ${esc(stageStatusLabel(item.status))}</span>`).join("")}</div>`;
       panel.querySelector("[data-close-provenance]")?.addEventListener("click", () => { panel.hidden = true; });
       if (window.lucide) window.lucide.createIcons();
     } catch (error) {
-      panel.innerHTML = `<div class="provenance-heading"><strong>来源链读取失败</strong><button type="button" class="icon-button" data-close-provenance title="收起来源链" aria-label="收起来源链"><i data-lucide="x"></i></button></div><div class="empty-state">${esc(error.message)}</div>`;
+      panel.innerHTML = `<div class="provenance-heading"><strong>${esc(t("来源链读取失败"))}</strong><button type="button" class="icon-button" data-close-provenance title="${esc(t("收起来源链"))}" aria-label="${esc(t("收起来源链"))}"><i data-lucide="x"></i></button></div><div class="empty-state">${esc(error.message)}</div>`;
       panel.querySelector("[data-close-provenance]")?.addEventListener("click", () => { panel.hidden = true; });
       if (window.lucide) window.lucide.createIcons();
     }
@@ -1879,9 +1934,9 @@
 
   function renderReview() {
     const pending = ["waiting_approval", "waiting_input"].includes(app.state.status) || app.state.stage_results?.docking?.status === "stale";
-    $("review-state").textContent = pending ? "有待审核" : "暂无待审核";
+    $("review-state").textContent = pending ? t("有待审核") : t("暂无待审核");
     const history = app.state.human_decisions || [];
-    $("decision-history").innerHTML = history.length ? history.slice().reverse().map((item) => `<div class="decision-row"><span class="decision-time">${esc(item.timestamp || "—")}</span><span class="decision-actor">${esc(item.actor || "审核人")} · ${esc(item.action || "决策")}</span><span class="decision-reason">${esc(item.reason || "—")}</span></div>`).join("") : `<div class="empty-state">暂无人工决策记录。</div>`;
+    $("decision-history").innerHTML = history.length ? history.slice().reverse().map((item) => `<div class="decision-row"><span class="decision-time">${esc(item.timestamp || "—")}</span><span class="decision-actor">${esc(item.actor || t("审核人"))} · ${esc(item.action || t("决策"))}</span><span class="decision-reason">${esc(item.reason || "—")}</span></div>`).join("") : `<div class="empty-state">${esc(t("暂无人工决策记录。"))}</div>`;
   }
 
   // The receptor stage records an approval only; the CLI rejects any other
@@ -1898,14 +1953,14 @@
     const actions = reviewActions[stage] || reviewActions.docking_box;
     const previous = $("review-action").value;
     $("review-action").innerHTML = actions
-      .map(([value, label]) => `<option value="${value}">${esc(label)}</option>`).join("");
+      .map(([value, label]) => `<option value="${value}">${esc(t(label))}</option>`).join("");
     if (actions.some(([value]) => value === previous)) $("review-action").value = previous;
     const boxStage = stage === "docking_box";
     $("box-inputs").hidden = !boxStage;
     $("box-coverage").hidden = !boxStage;
     const note = $("review-stage-note");
     note.hidden = boxStage;
-    note.textContent = boxStage ? "" : "受体审核目前只记录「接受」。要否决修复结果，请从受体阶段重跑并调整参数。";
+    note.textContent = boxStage ? "" : t("受体审核目前只记录「接受」。要否决修复结果，请从受体阶段重跑并调整参数。");
     if (boxStage) renderBoxCoverage();
   }
 
@@ -1917,7 +1972,7 @@
       if (action === "select" || action === "approve") payload.pocket_rank = app.selectedPocket?.rank;
       if (action === "override") {
         const box = boxFromInputs();
-        if (!box) { toast("请填写有效的盒中心和正的盒尺寸。", true); return; }
+        if (!box) { toast(t("请填写有效的盒中心和正的盒尺寸。"), true); return; }
         payload.center = box.center;
         payload.size = box.size;
       }
@@ -1926,7 +1981,7 @@
       const response = await postJson("/api/review", payload);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
-      toast("人工决策已记录");
+      toast(t("人工决策已记录"));
       await fetchState();
     } catch (error) { toast(error.message, true); }
   }
@@ -1963,14 +2018,17 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    window.DrugStudioUI.initialize();
+    window.addEventListener("drugstudio:locale", refreshLanguage);
+    window.addEventListener("drugstudio:theme", refreshAppearance);
     document.querySelectorAll(".view:not(#view-project) .view-header").forEach((header) => {
       if (header.querySelector("[data-close-drawer]")) return;
       const close = document.createElement("button");
       close.type = "button";
       close.className = "icon-button drawer-close";
       close.dataset.closeDrawer = "true";
-      close.title = "关闭工具面板";
-      close.setAttribute("aria-label", "关闭工具面板");
+      close.title = t("关闭工具面板");
+      close.setAttribute("aria-label", t("关闭工具面板"));
       close.innerHTML = '<i data-lucide="x"></i>';
       header.appendChild(close);
     });

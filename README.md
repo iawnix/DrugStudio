@@ -105,6 +105,13 @@ the upstream artifact chain for a selected result.
 The server can also start with an empty `--runs-root`; create projects and
 conversations first, then initialize the first run with `drugstudio init`.
 
+### Appearance and language
+
+The top bar offers **System / Light / Dark** appearance and **中文 / EN**.
+Preferences are stored in this browser and applied on the next visit. System
+mode follows operating-system theme changes. Language changes update interface
+labels, not conversation messages, file contents, or scientific records.
+
 ### Module settings
 
 Open **设置** in the workbench to inspect and change the scientific tool

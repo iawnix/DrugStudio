@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DrugStudio</title>
+  <script src="/static/preferences.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,6 +16,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/appearance.css">
 </head>
 <body>
   <div class="shell">
@@ -24,7 +26,9 @@
         <div><div class="brand">DRUGSTUDIO</div><div class="brand-sub">结构研究工作台</div></div>
       </div>
       <div class="top-actions">
-        <span class="connection-dot" id="connection-dot"></span><span id="connection-label">正在连接</span>
+        <span class="connection-status"><span class="connection-dot" id="connection-dot"></span><span id="connection-label">正在连接</span></span>
+        <button class="top-control language-toggle" id="language-toggle" type="button" title="Switch to English" aria-label="Switch to English">EN</button>
+        <label class="theme-picker"><i data-lucide="sun-moon"></i><select id="theme-selector" aria-label="外观主题"><option value="system">跟随系统</option><option value="light">明亮</option><option value="dark">深色</option></select></label>
         <button class="icon-button" id="refresh-button" title="刷新运行数据" aria-label="刷新运行数据"><i data-lucide="refresh-cw"></i></button>
       </div>
     </header>

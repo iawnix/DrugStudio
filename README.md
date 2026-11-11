@@ -211,6 +211,29 @@ observations. Tool adapters own the chemistry and external program calls.
 Run artifacts are immutable and content-hashed; reruns branch to new run
 directories, retaining the original inputs and outputs.
 
+## Conversation rendering
+
+Assistant replies and saved transcripts support Markdown headings, nested lists,
+quotes, links, images, tables, and fenced code blocks with syntax highlighting.
+Code and complete replies have copy buttons; copying a reply preserves its
+original Markdown. Wide tables and code scroll inside the conversation.
+
+Math supports `$...$` and `\(...\)` inline, and `$$...$$` or `\[...\]` for
+standalone equations, including aligned equations and matrices. KaTeX's mhchem
+extension supports chemistry such as `$\ce{CO2 + H2O <=> H2CO3}$`. These are
+KaTeX expressions, not a full LaTeX document processor. Invalid formulas remain
+visible, and code blocks and escaped dollar signs are not interpreted as math.
+
+Markdown, sanitization, highlighting, formula scripts and fonts are bundled
+locally with version and checksum records in `static/vendor/manifest.json`.
+Raw HTML is displayed as text. Both appearance themes share the same renderer.
+
+Chat replies stream as the model generates text. Existing messages stay mounted,
+and scrolling up suspends automatic scrolling; **回到最新消息** resumes following
+the reply. Switching conversations keeps an ongoing response attached to its
+original conversation. If a stream fails, received text is retained with an
+interruption notice. Tool execution still requires the existing human approvals.
+
 ## Development
 
 The review panel supports docking-box decisions and receptor approval. The

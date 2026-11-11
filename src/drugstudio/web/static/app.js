@@ -163,6 +163,7 @@
     await fetchModelConfig();
     await fetchModuleConfig();
     renderChat();
+    document.documentElement.dataset.workspaceReady = 'true';
   }
 
   function initializeCodeEditor() {
@@ -1228,12 +1229,13 @@
     renderChatList(); renderChat();
   }
 
-  async function persistChat() {
-    if (!app.chatId) return;
+  async function persistChat({ projectId = app.projectId, chatId = app.chatId, history = app.chatHistory } = {}) {
+    if (!chatId) return;
     const response = await postJson("/api/chats/save",
-      { project_id: app.projectId, chat_id: app.chatId, messages: app.chatHistory });
+      { project_id: projectId, chat_id: chatId, messages: history });
     const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-    const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
+    if (app.projectId !== projectId) return;
+    const current = app.chatSessions.find((item) => item.chat_id === chatId);
     if (current) Object.assign(current, data); else app.chatSessions.unshift(data);
     renderChatList();
   }
@@ -1322,30 +1324,83 @@
     return typeof value === "string" ? value : "";
   }
 
-  function renderChat() {
-    const messages = app.chatHistory || [];
-    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? `<span class="chat-user-avatar">${esc(t("你"))}</span>` : `<span class="chat-avatar">DS</span>DrugStudio`}</div><div class="chat-content">${esc(messageText(item.content)).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个研究问题开始"))}</h2><p>${esc(t("我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("解释当前工作流下一步需要什么"))}">${esc(t("解释下一步"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`;
-    $("chat-messages").insertAdjacentHTML("beforeend", pendingActionCard());
-    if (app.chatBusy) $("chat-messages").insertAdjacentHTML("beforeend", `<div class="chat-typing" aria-live="polite"><span class="chat-avatar">DS</span><span class="typing-dots"><i></i><i></i><i></i></span><span>${esc(t("正在思考"))}</span></div>`);
-    $("approve-action")?.addEventListener("click", () => decideChatAction(true));
-    $("reject-action")?.addEventListener("click", () => decideChatAction(false));
-    $("chat-messages").querySelectorAll("[data-chat-suggestion]").forEach((button) => button.addEventListener("click", () => {
-      $("chat-input").value = button.dataset.chatSuggestion || "";
-      resizeChatInput();
-      $("chat-input").focus();
-    }));
-    if (window.lucide) window.lucide.createIcons();
-    $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
-    const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
-    $("project-title").textContent = chatTitle(current);
+  function chatWelcome() { return `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个研究问题开始"))}</h2><p>${esc(t("我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("解释当前工作流下一步需要什么"))}">${esc(t("解释下一步"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`; }
+
+  const pendingChats = new Map();
+  const chatKey = (projectId = app.projectId, chatId = app.chatId) => JSON.stringify([projectId, chatId]);
+  const currentTurnVisible = () => app.chatTurn && chatKey() === app.chatTurn.key;
+  const chatAtBottom = () => {
+    const node = $("chat-messages");
+    return node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+  };
+  function updateChatJump() { $("chat-jump-latest").hidden = chatAtBottom(); }
+
+  function renderChat({ forceScroll = false } = {}) {
+    const container = $("chat-messages"), key = chatKey();
+    const changedChat = container.dataset.chatKey !== key;
+    const previousTop = container.scrollTop;
+    const follow = forceScroll || changedChat || chatAtBottom();
+    if (changedChat) { container.replaceChildren(); container.dataset.chatKey = key; }
+    app.pendingAction = pendingChats.get(key) || null;
+    const messages = [...(app.chatHistory || [])];
+    if (currentTurnVisible() && app.chatTurn.preview) messages.push({ role: 'assistant', content: app.chatTurn.preview, streaming: true });
+    const locale = document.documentElement.lang;
+    let articles = [...container.querySelectorAll(':scope > .chat-message')];
+    if (messages.length) {
+      container.querySelector('.chat-welcome')?.remove();
+      messages.forEach((item, index) => {
+        let article = articles[index];
+        if (!article) {
+          article = document.createElement('article');
+          container.insertBefore(article, container.querySelector('.chat-tail'));
+        }
+        const source = messageText(item.content);
+        const signature = JSON.stringify([item.role, source, item.actions, item.streaming, item.error, locale]);
+        if (article._signature === signature) return;
+        article._signature = signature; article._source = source;
+        article.className = `chat-message ${item.role === 'user' ? 'user' : 'assistant'}`;
+        article.innerHTML = `<div class="chat-role">${item.role === 'user' ? `<span class="chat-user-avatar">${esc(t('你'))}</span>` : '<span class="chat-avatar">DS</span>DrugStudio'}</div>
+          <div class="chat-content">${item.role === 'user' ? `<div class="chat-plain">${esc(source)}</div>` : window.DrugStudioChat.render(source)}</div>
+          ${item.actions?.length ? `<div class="chat-actions">${item.actions.map(action => `<span>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ''}</span>`).join('')}</div>` : ''}
+          ${item.error ? `<div class="chat-error" role="status">${esc(item.error)}</div>` : ''}
+          ${item.role !== 'user' && !item.streaming ? `<button type="button" class="chat-message-copy" data-copy-message>${esc(t('复制回复'))}</button>` : ''}`;
+      });
+      articles.slice(messages.length).forEach(node => node.remove());
+    } else {
+      articles.forEach(node => node.remove());
+      let welcome = container.querySelector('.chat-welcome');
+      if (!welcome || welcome.dataset.locale !== locale) {
+        welcome?.remove();
+        container.insertAdjacentHTML('afterbegin', chatWelcome());
+        container.querySelector('.chat-welcome').dataset.locale = locale;
+      }
+    }
+    let tail = container.querySelector('.chat-tail');
+    if (!tail) { tail = document.createElement('div'); tail.className = 'chat-tail'; container.append(tail); }
+    const busy = app.chatBusy && (!app.chatTurn || currentTurnVisible());
+    const tailSignature = JSON.stringify([app.pendingAction, busy, locale]);
+    if (tail._signature !== tailSignature) {
+      const reason = $('pending-reason')?.value || '';
+      tail._signature = tailSignature;
+      tail.innerHTML = pendingActionCard() + (busy ? `<div class="chat-typing" aria-live="polite"><span class="chat-avatar">DS</span><span class="typing-dots"><i></i><i></i><i></i></span><span>${esc(t('正在处理'))}</span></div>` : '');
+      if ($('pending-reason')) $('pending-reason').value = reason;
+      $('approve-action')?.addEventListener('click', () => decideChatAction(true));
+      $('reject-action')?.addEventListener('click', () => decideChatAction(false));
+      if (window.lucide) window.lucide.createIcons();
+    }
+    container.scrollTop = follow ? container.scrollHeight : previousTop;
+    updateChatJump();
+    const current = app.chatSessions.find(item => item.chat_id === app.chatId);
+    $('project-title').textContent = chatTitle(current);
   }
 
   // A turn can come back suspended: the model asked to run a command or
   // write a file, and nothing has happened yet. The card is the gate, so it
   // lives in the transcript rather than as a toast that can be missed.
-  function absorbChatReply(history, data) {
+  function absorbChatReply(history, data, key = chatKey()) {
     if (data.reply) history.push({ role: "assistant", content: data.reply, actions: data.actions || [] });
-    app.pendingAction = data.pending || null;
+    if (data.pending) pendingChats.set(key, data.pending); else pendingChats.delete(key);
+    if (key === chatKey()) app.pendingAction = data.pending || null;
     if (data.pending && !data.reply) {
       history.push({ role: "assistant", content: t("需要你确认下面的操作。"), actions: data.actions || [] });
     }
@@ -1369,63 +1424,108 @@
     </article>`;
   }
 
+  function beginChatTurn() {
+    const turn = { key: chatKey(), projectId: app.projectId, runKey: app.runKey,
+      chatId: app.chatId, history: app.chatHistory, preview: '', timer: null };
+    app.chatTurn = turn; app.chatBusy = true; $('send-chat').disabled = true;
+    return turn;
+  }
+
+  async function readChatResponse(path, payload, turn) {
+    const response = await postJson(path, { ...payload, stream: true,
+      project_id: turn.projectId, run_key: turn.runKey, chat_id: turn.chatId });
+    if (!response.ok || !response.headers.get('Content-Type')?.includes('application/x-ndjson')) {
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || response.statusText);
+      return result;
+    }
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = '', result, complete = false;
+    const schedule = () => {
+      if (turn.timer !== null) return;
+      turn.timer = window.setTimeout(() => {
+        turn.timer = null;
+        if (app.chatTurn === turn && currentTurnVisible()) renderChat();
+      }, 80);
+    };
+    const consume = line => {
+      if (!line.trim()) return;
+      const event = JSON.parse(line);
+      if (event.type === 'response_start') { turn.preview = ''; schedule(); }
+      else if (event.type === 'delta') { turn.preview += event.text || ''; schedule(); }
+      else if (event.type === 'error') throw new Error(event.error || t('无法回复'));
+      else if (event.type === 'done') { result = event.result; complete = true; }
+    };
+    try {
+      while (!complete) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        let at;
+        while ((at = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, at); buffer = buffer.slice(at + 1); consume(line);
+        }
+        if (done) { if (buffer.trim()) consume(buffer); break; }
+      }
+      if (!complete) throw new Error(t('回复中断，已保留收到的内容'));
+      return result;
+    } finally { await reader.cancel().catch(() => {}); }
+  }
+
+  function recordChatError(turn, error) {
+    turn.history.push({ role: 'assistant', content: turn.preview
+      ? `${turn.preview}\n\n> ${t('回复中断，已保留收到的内容')}：${error.message}`
+      : `${t('无法回复')}：${error.message}` });
+  }
+
+  async function finishChatTurn(turn) {
+    if (turn.timer !== null) window.clearTimeout(turn.timer);
+    turn.preview = '';
+    if (app.chatTurn === turn) { app.chatTurn = null; app.chatBusy = false; $('send-chat').disabled = false; }
+    renderChatStatus();
+    try { await persistChat(turn); } catch (error) { toast(error.message, true); }
+    if (chatKey() === turn.key) { app.chatHistory = turn.history; renderChat(); }
+  }
+
   async function decideChatAction(approved) {
     const pending = app.pendingAction;
     if (!pending || app.chatBusy) return;
-    const reason = $("pending-reason")?.value || "";
-    app.chatBusy = true; app.pendingAction = null;
-    $("chat-status").textContent = approved ? t("正在执行…") : t("已拒绝");
-    renderChat();
-    const history = app.chatHistory;
+    const reason = $('pending-reason')?.value || '';
+    const turn = beginChatTurn();
+    pendingChats.delete(turn.key); app.pendingAction = null;
+    turn.history.push({ role: 'user', content: approved ? t('（已批准该操作）') : `${t('（已拒绝该操作）')}${reason ? ` ${reason}` : ''}` });
+    renderChat({ forceScroll: true });
     try {
-      const response = await postJson("/api/project/chat/decide",
-        { action_id: pending.action_id, approved, reason });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || response.statusText);
-      history.push({ role: "user", content: approved ? t("（已批准该操作）") : `${t("（已拒绝该操作）")}${reason ? ` ${reason}` : ""}` });
-      absorbChatReply(history, data);
-    } catch (error) {
-      history.push({ role: "assistant", content: `${t("无法回复")}：${error.message}` });
-    }
-    app.chatBusy = false;
-    renderChatStatus();
-    try { await persistChat(); } catch (error) { toast(error.message, true); }
-    renderChat();
+      const result = await readChatResponse('/api/project/chat/decide', { action_id: pending.action_id, approved, reason }, turn);
+      absorbChatReply(turn.history, result, turn.key);
+    } catch (error) { recordChatError(turn, error); }
+    await finishChatTurn(turn);
   }
 
   async function sendChat(event) {
     event.preventDefault();
-    const input = $("chat-input"), content = input.value.trim(); if (!content || app.chatBusy) return;
-    const projectId = app.projectId, history = app.chatHistory;
+    const input = $('chat-input'), content = input.value.trim();
+    if (!content || app.chatBusy) return;
+    const turn = beginChatTurn();
     if (app.pendingAction) {
-      // Moving on without answering is itself an answer. Record it as a
-      // refusal so the audit trail does not just lose the request, and so
-      // the suspended call cannot be resumed later.
       const abandoned = app.pendingAction;
-      app.pendingAction = null;
-      postJson("/api/project/chat/decide", {
+      pendingChats.delete(turn.key); app.pendingAction = null;
+      postJson('/api/project/chat/decide', {
         action_id: abandoned.action_id, approved: false, resume: false,
-        reason: t("用户未处理该请求，改为发送了新消息"),
-      }).catch(() => { /* the request had already expired */ });
+        reason: t('用户未处理该请求，改为发送了新消息'),
+        project_id: turn.projectId, run_key: turn.runKey
+      }).catch(() => {});
     }
-    history.push({ role: "user", content }); input.value = ""; app.chatBusy = true; $("send-chat").disabled = true; renderChat();
-    $("chat-status").textContent = t("Agent 正在处理");
-    $("chat-status").classList.remove("chat-status-offline");
-    try { await persistChat(); } catch (error) { toast(error.message, true); }
+    turn.history.push({ role: 'user', content }); input.value = ''; resizeChatInput();
+    renderChat({ forceScroll: true });
+    $('chat-status').textContent = t('Agent 正在处理');
+    $('chat-status').classList.remove('chat-status-offline');
+    const payload = { messages: turn.history, model: $('chat-model').value.trim(), temperature: Number($('chat-temperature').value) };
+    try { await persistChat(turn); } catch (error) { toast(error.message, true); }
     try {
-      const response = await postJson("/api/project/chat", {
-        messages: history, chat_id: app.chatId,
-        model: $("chat-model").value.trim(), temperature: Number($("chat-temperature").value)
-      });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-      absorbChatReply(history, data);
-    } catch (error) { history.push({ role: "assistant", content: `${t("无法回复")}：${error.message}` }); }
-    app.chatBusy = false; $("send-chat").disabled = false;
-    renderChatStatus();
-    if (app.projectId === projectId) {
-      try { await persistChat(); } catch (error) { toast(error.message, true); }
-    }
-    if (app.projectId === projectId) { app.chatHistory = history; renderChat(); }
+      const result = await readChatResponse('/api/project/chat', payload, turn);
+      absorbChatReply(turn.history, result, turn.key);
+    } catch (error) { recordChatError(turn, error); }
+    await finishChatTurn(turn);
   }
 
   function resizeChatInput() {
@@ -1442,7 +1542,11 @@
       // Selection is client state now; the server only confirmed the key.
       resetRunBox();
       app.runKey = data.selected || runKey;
-      if (data.project_id) app.projectId = data.project_id;
+      if (data.project_id && data.project_id !== app.projectId) {
+        app.projectId = data.project_id;
+        app.chatId = null; app.chatHistory = [];
+        await fetchProjects();
+      }
       // A node chosen in the previous run says nothing about this one.
       app.stagePickedByUser = false;
       app.eventSource?.close(); app.eventSource = null; app.events = []; app.provenance = null;
@@ -2207,6 +2311,23 @@
     document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => {
       document.querySelector(`[data-view="${button.dataset.openView}"]`)?.click();
     }));
+    $("chat-messages").addEventListener("scroll", updateChatJump, { passive: true });
+    $("chat-jump-latest").addEventListener("click", () => {
+      $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
+      updateChatJump();
+    });
+    $("chat-messages").addEventListener("click", async event => {
+      const suggestion = event.target.closest('[data-chat-suggestion]');
+      if (suggestion) { $("chat-input").value = suggestion.dataset.chatSuggestion; resizeChatInput(); $("chat-input").focus(); }
+      const button = event.target.closest('[data-copy-code],[data-copy-message]');
+      if (!button) return;
+      const source = button.hasAttribute('data-copy-code') ? button.closest('.chat-code').querySelector('code').textContent : button.closest('.chat-message')._source;
+      try {
+        await window.DrugStudioChat.copy(source);
+        button.textContent = t('已复制');
+        window.setTimeout(() => { if (button.isConnected) button.textContent = t(button.hasAttribute('data-copy-code') ? '复制代码' : '复制回复'); }, 1600);
+      } catch (error) { toast(error.message, true); }
+    });
     $("new-chat").addEventListener("click", newChat);
     $("context-backdrop")?.addEventListener("click", () => showView("project"));
     document.querySelectorAll("[data-chat-filter]").forEach((button) => button.addEventListener("click", () => {

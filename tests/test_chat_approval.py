@@ -293,5 +293,60 @@ class ApprovalGate(ChatTestCase):
         self.assertLessEqual(len(self.app._pending_actions), 32)
 
 
+
+
+
+class StreamingChat(ChatTestCase):
+    @staticmethod
+    def chunk(content='', tool_calls=None):
+        try:
+            from langchain_core.messages import AIMessageChunk
+            return AIMessageChunk(content=content, tool_calls=tool_calls or [])
+        except ImportError:
+            class Chunk(AIMessage):
+                def __add__(self, other):
+                    return Chunk(content=self.content + other.content,
+                                 tool_calls=self.tool_calls + other.tool_calls)
+            return Chunk(content=content, tool_calls=tool_calls or [])
+
+    def drive_stream(self, batches):
+        class Model:
+            def stream(self, messages):
+                yield from batches.pop(0)
+            def invoke(self, messages):
+                raise AssertionError('streaming must not fall back to a buffered model call')
+        events, actions, messages = [], [], []
+        tools = self.app._chat_tools(self.project_root, actions)
+        result = self.app._run_chat_loop(Model(), messages, {tool.name: tool for tool in tools}, actions,
+                                        project_root=self.project_root, run_root=self.run_root,
+                                        chat_id='stream-test', payload={}, emit=events.append)
+        return result, events
+
+    def test_deltas_are_sent_and_final_reply_is_complete(self):
+        result, events = self.drive_stream([[self.chunk('中文 '), self.chunk('$E=mc^2$')]])
+        self.assertEqual(result['reply'], '中文 $E=mc^2$')
+        self.assertEqual(events, [{'type': 'response_start'}, {'type': 'delta', 'text': '中文 '},
+                                  {'type': 'delta', 'text': '$E=mc^2$'}])
+
+    def test_streamed_mutating_tool_still_requires_approval(self):
+        marker = self.project_root / 'must-not-exist.txt'
+        result, events = self.drive_stream([[self.chunk('I need approval.'), self.chunk(tool_calls=[{
+            'id': 'call-stream', 'name': 'run_command', 'args': {'command': f'touch {marker}'}}])]])
+        self.assertFalse(marker.exists())
+        self.assertIn('pending', result)
+        self.assertEqual(result['reply'], 'I need approval.')
+        self.assertNotIn(str(marker), json.dumps(events))
+
+    def test_read_tool_iteration_resets_preview_before_final_response(self):
+        result, events = self.drive_stream([
+            [self.chunk('Checking files'), self.chunk(tool_calls=[{
+                'id': 'call-read', 'name': 'list_files', 'args': {}}])],
+            [self.chunk('Finished')],
+        ])
+        self.assertEqual(result['reply'], 'Finished')
+        self.assertEqual([event['type'] for event in events].count('response_start'), 2)
+        self.assertEqual(result['actions'][0]['tool'], 'list_files')
+
+
 if __name__ == "__main__":
     unittest.main()

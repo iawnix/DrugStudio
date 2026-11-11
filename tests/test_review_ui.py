@@ -134,6 +134,7 @@ class BrowserHarness(unittest.TestCase):
         self.page.set_default_timeout(10000)
         self.page.goto(f"http://127.0.0.1:{self.port}/", wait_until="domcontentloaded")
         self.page.wait_for_function("document.querySelector('#run-selector').value === 'proj/runs/r1'")
+        self.page.wait_for_function("document.documentElement.dataset.workspaceReady === 'true'")
 
     def stop_server(self):
         self.httpd.shutdown()

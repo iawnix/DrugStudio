@@ -960,7 +960,8 @@ class WebApplication:
             "write_file and run_command stop and wait for the user to approve them, so state "
             "plainly what you intend to do and why before requesting one.\n"
             "Never expose credentials. Reply in the user's language, preferring Chinese when "
-            "they write Chinese."
+            "they write Chinese. Use Markdown for lists, tables and links, fenced blocks for "
+            "code, and $...$ or $$...$$ delimiters for mathematical formulas."
         )
 
     def _restore_messages(self, history: list):
@@ -975,12 +976,23 @@ class WebApplication:
         return messages
 
     def _run_chat_loop(self, bound_model, messages, tool_map, actions, *, pending_calls=None,
-                       project_root: Path, run_root: Path, chat_id: str, payload: dict) -> dict:
+                       project_root: Path, run_root: Path, chat_id: str, payload: dict, emit=None) -> dict:
         """Drive the model/tool loop, suspending when a tool needs approval."""
         from langchain_core.messages import ToolMessage
         for _ in range(self.TOOL_CALL_LIMIT):
             if pending_calls is None:
-                response = bound_model.invoke(messages)
+                if emit is not None and hasattr(bound_model, "stream"):
+                    emit({"type": "response_start"})
+                    response = None
+                    for chunk in bound_model.stream(messages):
+                        response = chunk if response is None else response + chunk
+                        text = self._message_text(chunk.content, recover_legacy=False)
+                        if text:
+                            emit({"type": "delta", "text": text})
+                    if response is None:
+                        raise RuntimeError("model returned an empty stream")
+                else:
+                    response = bound_model.invoke(messages)
                 messages.append(response)
                 calls = list(getattr(response, "tool_calls", []) or [])
                 if not calls:
@@ -993,10 +1005,13 @@ class WebApplication:
                 if name in self.MUTATING_TOOLS:
                     # Suspend the whole turn: the conversation so far, this
                     # call and anything queued behind it wait for a decision.
-                    return self._suspend_for_approval(
+                    outcome = self._suspend_for_approval(
                         call=call, remaining=calls, messages=messages, actions=actions,
                         project_root=project_root, run_root=run_root, chat_id=chat_id,
                         payload=payload)
+                    if getattr(messages[-1], "tool_calls", None):
+                        outcome["reply"] = self._message_text(messages[-1].content)
+                    return outcome
                 tool = tool_map.get(name)
                 if tool is None:
                     result = "Unknown tool"
@@ -1036,7 +1051,7 @@ class WebApplication:
                                            chat_id=chat_id or None)
         return {"reply": "", "actions": actions, "pending": summary}
 
-    def resolve_chat_action(self, payload: dict) -> dict:
+    def resolve_chat_action(self, payload: dict, *, emit=None) -> dict:
         """Apply a human decision to a suspended tool call and resume."""
         from langchain_core.messages import ToolMessage
         action_id = str(payload.get("action_id") or "")
@@ -1079,12 +1094,12 @@ class WebApplication:
         outcome = self._run_chat_loop(bound_model, messages, tool_map, actions,
                                       pending_calls=state["remaining"],
                                       project_root=project_root, run_root=run_root,
-                                      chat_id=state.get("chat_id", ""), payload=state["payload"])
+                                      chat_id=state.get("chat_id", ""), payload=state["payload"], emit=emit)
         outcome["decided"] = {"action_id": action_id, "approved": approved}
         return outcome
 
     def chat(self, payload: dict, *, project_root: Path | None = None,
-             run_root: Path | None = None) -> dict:
+             run_root: Path | None = None, emit=None) -> dict:
         with self._llm_config_lock:
             has_key = bool(self._llm_config["api_key"])
         if not has_key:
@@ -1105,7 +1120,7 @@ class WebApplication:
         bound_model = self._chat_model(payload, run_root, tools)
         return self._run_chat_loop(bound_model, messages, {tool.name: tool for tool in tools},
                                    actions, project_root=project_root, run_root=run_root,
-                                   chat_id=str(payload.get("chat_id") or ""), payload=payload)
+                                   chat_id=str(payload.get("chat_id") or ""), payload=payload, emit=emit)
 
     def manifest(self, run_root: Path | None = None) -> dict:
         root = run_root or self.default_run_root
@@ -1777,10 +1792,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self.app.stop_terminal(str(payload.get("session_id") or ""),
                                                   project_root=self._project_scope(payload)))
             elif parsed.path == "/api/project/chat":
-                self._json(self.app.chat(payload, project_root=self._project_scope(payload),
-                                         run_root=self._run_scope(payload, required=False)))
+                project_root = self._project_scope(payload)
+                run_root = self._run_scope(payload, required=False)
+                if payload.get("stream") is True:
+                    self._chat_stream(lambda emit: self.app.chat(
+                        payload, project_root=project_root, run_root=run_root, emit=emit))
+                else:
+                    self._json(self.app.chat(payload, project_root=project_root, run_root=run_root))
             elif parsed.path == "/api/project/chat/decide":
-                self._json(self.app.resolve_chat_action(payload))
+                if payload.get("stream") is True:
+                    self._chat_stream(lambda emit: self.app.resolve_chat_action(payload, emit=emit))
+                else:
+                    self._json(self.app.resolve_chat_action(payload))
             elif parsed.path == "/api/continue":
                 self._json(self.app.start_workflow(payload, self._run_scope(payload)), status=HTTPStatus.ACCEPTED)
             elif parsed.path == "/api/control":
@@ -1799,6 +1822,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "unknown endpoint"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:
             self._json({"error": f"{type(exc).__name__}: {exc}"}, status=HTTPStatus.BAD_REQUEST)
+
+    def _chat_stream(self, operation) -> None:
+        """Flush framed text updates; tool arguments and reasoning stay server-side."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def emit(event):
+            self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+            self.wfile.flush()
+
+        try:
+            outcome = operation(emit)
+            emit({"type": "done", "result": outcome})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as exc:
+            try:
+                emit({"type": "error", "error": str(exc)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))

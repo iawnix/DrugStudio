@@ -96,10 +96,10 @@ class PresentationPreferences(harness.BrowserHarness):
         self.assertEqual(self.app.model_config(), config_before)
 
     def test_language_does_not_translate_conversation_content(self):
-        chat = self.app.list_chats('.')['chats'][0]
+        chat = self.app.list_chats('proj')['chats'][0]
         messages = [{'role': 'user', 'content': '结构获取：保留我的原文'},
                     {'role': 'assistant', 'content': '这是科学记录，不是界面标签。'}]
-        self.app.save_chat('.', chat['chat_id'], messages)
+        self.app.save_chat('proj', chat['chat_id'], messages)
         self.page.reload(wait_until='domcontentloaded')
         self.page.locator('.chat-content').first.wait_for()
         before = self.page.locator('.chat-content').all_text_contents()

@@ -23,5 +23,5 @@ where = ["src"]
 include = ["drugstudio*"]
 
 [tool.setuptools.package-data]
-"drugstudio.web" = ["static/*"]
+"drugstudio.web" = ["static/*", "static/vendor/*", "static/vendor/fonts/*"]
 "drugstudio" = ["scripts/*.sh", "pbs/*.pbs"]

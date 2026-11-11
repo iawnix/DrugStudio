@@ -18,6 +18,8 @@
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/appearance.css">
+  <link rel="stylesheet" href="/static/vendor/katex.min.css">
+  <link rel="stylesheet" href="/static/chat.css">
 </head>
 <body>
   <div class="shell">
@@ -62,7 +64,8 @@
           </details>
           <div class="conversation-layout">
             <section class="project-chat-panel">
-              <div class="chat-messages" id="chat-messages"></div>
+              <div class="chat-messages" id="chat-messages" aria-label="对话消息"></div>
+              <button type="button" class="chat-jump-latest" id="chat-jump-latest" hidden>回到最新消息</button>
               <form class="chat-form" id="chat-form"><div class="chat-composer-shell"><textarea id="chat-input" rows="3" placeholder="询问当前项目、结构或对接结果"></textarea><div class="chat-form-footer"><div class="chat-model-settings"><label>模型<input id="chat-model" class="input-control" type="text" value="gpt-4.1-mini" aria-label="聊天模型"></label><label>温度 <output id="chat-temperature-value">0.2</output><input id="chat-temperature" type="range" min="0" max="2" step="0.1" value="0.2" aria-label="模型温度"></label><button class="icon-button model-settings-button" type="button" id="open-model-settings" title="模型连接设置" aria-label="模型连接设置"><i data-lucide="settings-2"></i></button></div><span id="chat-status" class="chat-status"></span><button class="primary-button" type="submit" id="send-chat"><i data-lucide="arrow-up"></i><span>发送</span></button></div></div></form>
             </section>
           </div>
@@ -149,6 +152,12 @@
   </dialog>
   <div class="auth-overlay" id="auth-overlay" hidden><form class="auth-dialog" id="auth-form"><div class="eyebrow">工作区访问</div><h2>解锁工作台</h2><p>输入服务器启动时打印的访问令牌。</p><label for="auth-token">访问令牌</label><input id="auth-token" class="input-control" type="password" autocomplete="current-password" required><div class="auth-error" id="auth-error"></div><button class="primary-button" type="submit">继续</button></form></div>
   <div class="toast" id="toast"></div>
+  <script src="/static/vendor/markdown-it.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/katex.min.js"></script>
+  <script src="/static/vendor/mhchem.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/chat-renderer.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

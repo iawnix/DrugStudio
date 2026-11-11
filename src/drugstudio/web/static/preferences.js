@@ -3,6 +3,15 @@
   "use strict";
   const MESSAGES = {
   "en": {
+    "代码": "Code",
+    "复制代码": "Copy code",
+    "复制回复": "Copy response",
+    "已复制": "Copied",
+    "复制失败，请手动选择文本": "Copy failed; please select the text manually",
+    "表格": "Table",
+    "对话消息": "Conversation messages",
+    "回到最新消息": "Jump to latest",
+    "回复中断，已保留收到的内容": "Reply interrupted; received content has been preserved",
     "药物设计工作站": "Drug design workstation",
     "正在连接": "Connecting",
     "已连接": "Connected",

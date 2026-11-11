@@ -27,10 +27,12 @@ jobs:
           drugstudio --help
           python -m drugstudio.web.server --help
           python -c "from drugstudio.web.server import STATIC_ROOT; assert (STATIC_ROOT / 'index.html').is_file(); assert (STATIC_ROOT / 'app.js').is_file(); assert (STATIC_ROOT / 'preferences.js').is_file(); assert (STATIC_ROOT / 'appearance.css').is_file()"
+          python -c "from drugstudio.web.server import STATIC_ROOT; import json, hashlib; assets = json.loads((STATIC_ROOT / 'vendor/manifest.json').read_text()); assert all(hashlib.sha256((STATIC_ROOT / 'vendor' / name).read_bytes()).hexdigest() == item['sha256'] for name, item in assets.items()); assert (STATIC_ROOT / 'chat-renderer.js').is_file(); assert (STATIC_ROOT / 'chat.css').is_file()"
           python -c "from pathlib import Path; import drugstudio; root = Path(drugstudio.__file__).parent; assert (root / 'scripts/run_receptor_env.sh').is_file(); assert (root / 'pbs/run_local_af3.pbs').is_file()"
       - run: python -m unittest discover -s tests -v
       - run: node --check src/drugstudio/web/static/app.js
       - run: node --check src/drugstudio/web/static/preferences.js
+      - run: node --check src/drugstudio/web/static/chat-renderer.js
   review-browser:
     runs-on: ubuntu-latest
     steps:

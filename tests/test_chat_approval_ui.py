@@ -58,7 +58,7 @@ class ChatApprovalCard(unittest.TestCase):
         cls.marker = cls.root / "proj" / "ran.txt"
 
         # Stand in for the model turn: always ask to run one command.
-        def fake_chat(payload, *, project_root=None, run_root=None):
+        def fake_chat(payload, *, project_root=None, run_root=None, emit=None):
             action_id = "fixed-action-id"
             cls.app._pending_actions[action_id] = {
                 "call": {"name": "run_command", "args": {"command": f"touch {cls.marker}"},
@@ -73,7 +73,7 @@ class ChatApprovalCard(unittest.TestCase):
                                 "command": f"touch {cls.marker}", "path": "", "cwd": "",
                                 "content_preview": "", "content_bytes": 0}}
 
-        def fake_resolve(payload):
+        def fake_resolve(payload, *, emit=None):
             # Reuse the real resolver, but answer with a fixed reply instead
             # of calling a model after the tool runs.
             state = cls.app._pending_actions.get(payload.get("action_id"))

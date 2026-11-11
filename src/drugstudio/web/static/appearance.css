@@ -362,3 +362,33 @@ button:disabled, input:disabled, select:disabled, textarea:disabled {
 @media (min-width: 761px) and (max-width: 1120px) {
   :root { --left-sidebar-width: 210px; --right-sidebar-width: 64px; }
 }
+
+/* Shared structure inspector: quiet defaults, optional advanced controls. */
+.molecule-sequence { padding: 10px 14px; border-top: 1px solid var(--line); max-height: 180px; overflow: auto; }
+.sequence-caption { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+.sequence-chain { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; }
+.sequence-chain > span { font-size: 11px; white-space: nowrap; padding-top: 8px; }
+.sequence-chain > div { display: flex; flex-wrap: wrap; gap: 2px; }
+.sequence-chain button { display: flex; flex-direction: column; min-width: 29px; padding: 3px; background: var(--surface-2); color: var(--ink); border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.sequence-chain button small { font-size: 9px; opacity: .7; }
+.sequence-chain button:hover, .sequence-chain button.selected { border-color: var(--blue); background: var(--surface-3); }
+.molecule-tools { padding: 12px 14px; font-size: 12px; border-top: 1px solid var(--line); }
+.molecule-tools summary { cursor: pointer; color: var(--muted); padding: 5px 0; }
+.molecule-tools details { margin-top: 12px; }
+.molecule-tools pre, #result-explanation pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.molecule-tools p { color: var(--muted); line-height: 1.6; }
+.molecule-control-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+.molecule-control-row label { display: flex; align-items: center; gap: 6px; }
+#selection-expression { flex: 1; min-width: 160px; }
+#selection-padding { width: 65px; }
+#selection-reason { width: 100%; margin: 8px 0; }
+#result-explanation { display: block; }
+#result-explanation select { max-width: 100%; margin: 8px 8px 8px 0; }
+#task-table tr[data-result-row] { cursor: pointer; }
+#task-table tr[data-result-row]:hover { background: var(--surface-2); }
+.molecule-tools input:not([type="checkbox"]):not([type="range"]) { background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font: inherit; }
+.molecule-tools input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+#result-explanation { padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; }
+#result-explanation p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+#result-explanation summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 8px; }
+#file-molecule-preview { flex: none; }

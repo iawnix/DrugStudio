@@ -29,7 +29,7 @@
   function refreshAppearance() {
     const palette = getComputedStyle(document.documentElement);
     const background = palette.getPropertyValue("--surface-2").trim();
-    [app.proteinViewer, app.ligandViewer].forEach((viewer) => {
+    [app.proteinViewer, app.ligandViewer, app.fileScene?.viewer].forEach((viewer) => {
       if (viewer) { viewer.setBackgroundColor(background); viewer.render(); }
     });
     if (app.proteinViewer) {
@@ -116,7 +116,7 @@
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
-  const fmt = (value, digits = 2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
+  const fmt = (value, digits = 2) => value != null && value !== "" && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
   // The server keeps no "current project" or "current run": every request
   // carries its own scope, so two tabs can sit on different runs.
   const scoped = (path, extra = {}) => {
@@ -346,12 +346,15 @@
   // without clearing it leaks the context, and browsers cap them at ~16, so
   // switching run or structure often enough used to blank the canvas.
   function disposeViewers() {
+    app.proteinScene?.dispose(); app.proteinScene = null; app.ligandScene?.dispose(); app.ligandScene = null;
     [["proteinViewer", "protein-viewer"], ["ligandViewer", "ligand-viewer"]].forEach(([key, id]) => {
       try { app[key]?.clear?.(); } catch (_) { /* viewer already torn down */ }
       app[key] = null;
       const host = $(id);
       if (host) host.innerHTML = "";
     });
+    app.fileScene?.dispose(); app.fileScene = null; $("file-molecule-preview")?.remove();
+    app.pocketShape = null;
     app.ligandKey = null;
     app.boxShapes = [];
     app.structureAtoms = [];
@@ -1054,6 +1057,15 @@
       const response = await fetch(scoped("/api/project/file", { path })); const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.filePath = data.path;
+      $("file-molecule-preview")?.remove(); app.fileScene?.dispose(); app.fileScene = null;
+      if (/\.(pdb|cif|mmcif|sdf|mol|pdbqt)$/i.test(data.path)) {
+        const detail = document.createElement("details"); detail.id = "file-molecule-preview"; detail.className = "molecule-tools";
+        const summary = document.createElement("summary"); summary.textContent = t("三维预览"); detail.append(summary);
+        const host = document.createElement("div"); host.className = "viewer-canvas"; host.style.height = "320px"; detail.append(host);
+        $("editor-file-label").closest(".context-editor")?.append(detail);
+        if (!detail.isConnected) $("editor-file-label").parentElement.parentElement.append(detail);
+        detail.addEventListener("toggle", () => { if (detail.open && !app.fileScene && window.$3Dmol) { try { app.fileScene = new DrugStudioMolecule.Scene(host); const ext = data.path.split('.').pop().toLowerCase(); app.fileScene.add(data.content, ext === 'mmcif' ? 'cif' : ext, /sdf|mol/.test(ext) ? 'ball' : 'cartoon'); app.fileScene.focus(); } catch (error) { host.textContent = error.message; } } });
+      }
       if (app.codeEditor) app.codeEditor.setValue(data.content); else $("file-editor").value = data.content;
       $("editor-file-label").textContent = data.path; $("editor-empty").hidden = true; $("save-file").disabled = false;
       setEditorMode(data.path);
@@ -1597,7 +1609,7 @@
     const items = structureCandidates();
     const previous = app.structureArtifact;
     const select = $("structure-select");
-    select.innerHTML = items.length ? items.map((item, index) => `<option value="${index}">${esc(item.kind)} · ${esc(item.path.split("/").pop())}</option>`).join("") : `<option value="">${t("暂无结构")}</option>`;
+    select.innerHTML = items.length ? items.map((item, index) => `<option value="${index}">${esc(t(({prepared_receptor_pdb:"对接受体",repaired_receptor_pdb:"修复结构",supplied_structure:"输入结构",experimental_structure:"实验结构",predicted_structure:"预测结构"})[item.kind] || item.kind))} · ${esc(item.metadata?.identifier || item.path.split("/").pop())} · ${esc((item.sha256 || "").slice(0,8))}</option>`).join("") : `<option value="">${t("暂无结构")}</option>`;
     app.structureArtifact = items.find(item => item.path === app.structureArtifact?.path) || items[0] || null;
     if (previous && (previous.path !== app.structureArtifact?.path || previous.sha256 !== app.structureArtifact?.sha256)) disposeViewers();
     if (app.structureArtifact) select.value = String(items.indexOf(app.structureArtifact));
@@ -1613,15 +1625,14 @@
     }
   }
 
-  function poseArtifacts() {
-    const all = Object.values(app.state.artifacts || {}).flat();
-    return all.filter((item) => item.kind === "docking_output" && String(item.metadata?.relative_output || "").endsWith("/poses.sdf"));
+  function poseChoices() {
+    return (app.state.results?.tasks || []).filter(task => task.viewable && task.receptor_artifact?.sha256 === app.structureArtifact?.sha256).flatMap(task => task.poses.map(pose => ({task, pose, value:`${task.task_id}:${pose.record_index}`})));
   }
 
   function renderPoseChoices() {
-    const poses = poseArtifacts();
-    const select = $("pose-select");
-    select.innerHTML = `<option value="">${t("暂无对接姿态")}</option>` + poses.map((item, index) => `<option value="${index}">${esc(item.metadata?.relative_output || item.path.split("/").pop())}</option>`).join("");
+    const select = $("pose-select"), previous = select.value;
+    select.innerHTML = `<option value="">${t("不叠加姿态")}</option>` + poseChoices().map(item => `<option value="${esc(item.value)}">${esc(item.task.state_id || item.task.ligand_id)} · ${t("姿态")} ${esc(item.pose.mode)} · ${fmt(item.pose.affinity_kcal_mol,3)}${item.pose.qc_pass === false ? " · QC failed" : ""}</option>`).join("");
+    if (poseChoices().some(item => item.value === previous)) select.value = previous;
   }
 
   function currentPockets() {
@@ -1631,7 +1642,7 @@
   function renderPockets() {
     const pockets = currentPockets();
     const referenceResidues = app.state.target?.binding_site_residues || [];
-    $("pocket-count").textContent = pockets.length;
+    $("pocket-count").textContent = pockets.length || (referenceResidues.length ? t("参考位点") : "—");
     const html = pockets.length ? pockets.map((pocket) => {
       const selected = app.selectedPocket?.rank === pocket.rank || (!app.selectedPocket && pocket.selected);
       return `<div class="pocket-card ${selected ? "selected" : ""}" data-pocket-rank="${pocket.rank}">
@@ -1720,16 +1731,21 @@
     if (!window.$3Dmol) { $("protein-viewer").innerHTML = `<div class="viewer-placeholder">${t("3D 查看器组件不可用")}</div>`; return; }
     if (!webglAvailable()) { showViewerMessage("protein-viewer", t("浏览器禁用了 WebGL；开启硬件加速后才能查看 3D 结构。")); return; }
     try {
+      app.proteinScene?.dispose();
       app.proteinViewer?.clear?.();
       $("protein-viewer").innerHTML = "";
-      const viewer = window.$3Dmol.createViewer($("protein-viewer"), { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--surface-2").trim(), antialias: true });
+      const scene = new DrugStudioMolecule.Scene($("protein-viewer"));
+      app.proteinScene = scene;
+      const viewer = scene.viewer;
       app.proteinViewer = viewer; app.boxShapes = []; app.pocketLabel = null;
-      viewer.addModel(text, "pdb");
+      scene.add(text, /\.(cif|mmcif)$/i.test(app.structureArtifact.path) ? "cif" : "pdb");
+      if (/\.(cif|mmcif)$/i.test(app.structureArtifact.path)) app.structureAtoms = scene.atoms().map(a => ({x:a.x,y:a.y,z:a.z,key:`${a.chain || ""}:${a.resi}${a.icode || ""}`}));
       setProteinStyle("cartoon");
       await addPoseOverlay(viewer);
       if (app.proteinViewer !== viewer || key !== structureCoordinateKey()) return;
       onBoxInputChanged();
       fitProteinView();
+      bindStructureSelection();
     } catch (error) {
       if (key === structureCoordinateKey()) showViewerMessage("protein-viewer", `${t("无法载入结构")}：${error.message || t("3D 渲染失败")}`);
     }
@@ -1748,27 +1764,92 @@
   }
 
   async function addPoseOverlay(viewer) {
-    const value = $("pose-select")?.value;
-    if (!value) return;
-    const artifact = poseArtifacts()[Number(value)];
-    if (!artifact || !viewer) return;
-    const text = await fetch(fileUrl(artifact.path)).then((response) => {
-      if (!response.ok) throw new Error("Unable to load docked pose");
-      return response.text();
-    });
+    const choice = poseChoices().find(item => item.value === $("pose-select").value);
+    if (!choice) return;
+    const response = await fetch(fileUrl(choice.task.pose_artifact.path));
+    if (!response.ok) throw new Error("Unable to load docked pose");
+    const text = await response.text();
     if (app.proteinViewer !== viewer) return;
-    viewer.addModel(text, "sdf");
-    viewer.setStyle({ model: 1 }, { stick: { radius: .2, colorscheme: "Jmol" }, sphere: { scale: .28, colorscheme: "Jmol" } });
+    const records = text.split(/\$\$\$\$\r?\n?/);
+    const record = records[choice.pose.record_index];
+    if (!record?.trim()) throw new Error("Pose record is missing");
+    app.proteinScene.add(record + "$$$$\n", "sdf", "ball");
+  }
+
+  function residueSelection(value) {
+    const match = String(value).match(/^(.*):(-?\d+)([A-Za-z]?)$/) || String(value).match(/^([A-Za-z]+)(-?\d+)([A-Za-z]?)$/);
+    return match ? {model:0, chain:match[1], resi:Number(match[2]), icode:match[3] || ""} : null;
+  }
+
+  function selectionViewKey() { return `drugstudio-view:${structureCoordinateKey()}:${$("pose-select").value}`; }
+
+  function bindStructureSelection() {
+    const scene = app.proteinScene;
+    if (!scene) return;
+    const residues = scene.residues();
+    $("structure-source").textContent = JSON.stringify({artifact:app.structureArtifact?.artifact_id,path:app.structureArtifact?.path,sha256:app.structureArtifact?.sha256,model:1},null,2);
+    $("molecule-style").value = 'cartoon'; $("molecule-surface").checked = false;
+    $("selection-box-summary").textContent = ''; app.selectionDraft = null;
+    $("structure-sequence").innerHTML = `<div class="sequence-caption">${t("坐标序列 · 模型 1")} · ${t("仅包含有坐标的残基；编号间隔不代表完整序列。")}</div>` + [...new Set(residues.map(r => r.chain))].map(chain => `<div class="sequence-chain"><span>${t("链")} ${esc(chain || '∅')}</span><div>${residues.map((r,i) => r.chain !== chain ? '' : `<button type="button" data-residue="${i}" title="${esc(`${r.chain || '∅'}:${r.resi}${r.icode} ${r.resn}`)}"><strong>${r.letter}</strong><small>${r.resi}${esc(r.icode)}</small></button>`).join('')}</div></div>`).join('');
+    let anchor = null;
+    scene.onSelection = atoms => {
+      const keys = new Set(atoms.map(DrugStudioMolecule.residueKey));
+      $("structure-sequence").querySelectorAll('[data-residue]').forEach(button => { const active = keys.has(residues[Number(button.dataset.residue)].key); button.classList.toggle('selected',active); button.setAttribute('aria-pressed',String(active)); });
+      $("viewer-hint").textContent = `${t("已选择")} ${keys.size} ${t("个残基")} · ${atoms.length} ${t("原子")}`;
+      $("selection-message").textContent = '';
+      app.selectionDraft = null; $("selection-box-summary").textContent = '';
+    };
+    $("structure-sequence").querySelectorAll('[data-residue]').forEach(button => button.addEventListener('click', e => {
+      const i = Number(button.dataset.residue), residue = residues[i];
+      const chosen = e.ctrlKey || e.metaKey ? new Set(scene.selection) : new Set();
+      if (e.shiftKey && anchor !== null && residues[anchor].chain === residue.chain) {
+        residues.slice(Math.min(anchor,i),Math.max(anchor,i)+1).filter(r => r.chain === residue.chain).forEach(r => r.ids.forEach(id => chosen.add(id)));
+      } else { const remove = residue.ids.every(id => chosen.has(id)); residue.ids.forEach(id => remove ? chosen.delete(id) : chosen.add(id)); anchor = i; }
+      scene.setSelection(chosen);
+    }));
+    scene.onSelection(scene.selected());
+  }
+
+  function bindMolecularControls() {
+    const action = (id, fn) => $(id).addEventListener('click', async () => { try { if (!app.proteinScene) throw new Error(t("请先打开结构")); await fn(app.proteinScene); } catch (error) { $("selection-message").textContent = error.message; } });
+    $("selection-form").addEventListener('submit',e => { e.preventDefault(); try { app.proteinScene?.command($("selection-expression").value); } catch (error) { $("selection-message").textContent = error.message; } });
+    $("molecule-style").addEventListener('change',e => { if (app.proteinScene) { app.proteinScene.style = e.target.value; app.proteinScene.paint(); } });
+    const surface = async () => { const scene = app.proteinScene; if (!scene) return; $("surface-status").textContent = t("正在更新"); try { await scene.surface($("molecule-surface").checked,Number($("surface-opacity").value)); if (scene === app.proteinScene) $("surface-status").textContent = ''; } catch (error) { $("surface-status").textContent = error.message; } };
+    $("molecule-surface").addEventListener('change',surface); $("surface-opacity").addEventListener('change',surface);
+    action('selection-focus',scene => scene.focus());
+    action('selection-clear',scene => scene.setSelection(new Set()));
+    action('selection-label',scene => scene.labelSelection());
+    action('selection-distance',scene => { $("selection-message").textContent = `${scene.distance().toFixed(2)} Å`; });
+    action('selection-save',scene => { localStorage.setItem(selectionViewKey(),JSON.stringify(scene.save())); toast(t("视图已保存在此浏览器")); });
+    action('selection-restore',scene => { scene.restore(JSON.parse(localStorage.getItem(selectionViewKey()) || 'null')); $("molecule-style").value = scene.style; });
+    action('selection-image',scene => { scene.viewer.render(); const link = document.createElement('a'); link.href = scene.viewer.pngURI(); link.download = 'DrugStudio-structure.png'; link.click(); });
+    action('selection-chat',scene => {
+      const residues = [...new Set(scene.selected().map(a => `${a.chain || '∅'}:${a.resi}${a.icode || ''}`))];
+      if (!residues.length) throw new Error(t("请先选择残基"));
+      $("chat-input").value = `${t("请分析所选位点")}\n${app.structureArtifact.artifact_id}\nSHA256: ${app.structureArtifact.sha256}\nModel 1: ${residues.join(', ')}`; resizeChatInput(); $("chat-input").focus();
+    });
+    action('selection-box',scene => {
+      const box = scene.candidateBox(Number($("selection-padding").value));
+      app.selectionDraft = { ...box, artifact_id:app.structureArtifact.artifact_id,sha256:app.structureArtifact.sha256,model:1,residues:scene.residues().filter(r => r.ids.some(id => scene.selection.has(id))).map(r => ({chain:r.chain,resi:r.resi,icode:r.icode})), scope:structureCoordinateKey() };
+      fillBoxInputs(box); app.boxVisible = true; $("toggle-box").setAttribute('aria-pressed','true'); drawDockingBox();
+      $("selection-box-summary").textContent = `${t("草稿")} · ${box.center.map(v => fmt(v,2)).join(', ')} · ${box.size.map(v => fmt(v,1)).join(' × ')} Å`;
+    });
+    action('selection-apply',async () => {
+      const draft = app.selectionDraft, reason = $("selection-reason").value.trim();
+      if (!draft || draft.scope !== structureCoordinateKey()) throw new Error(t("请先预览候选盒"));
+      if (!reason) throw new Error(t("请填写选择理由"));
+      const response = await postJson('/api/review',{stage:'docking_box',action:'override',center:draft.center,size:draft.size,reason,actor:'web-viewer',selection:{artifact_id:draft.artifact_id,sha256:draft.sha256,model:draft.model,residues:draft.residues}});
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
+      app.selectionDraft = null; $("selection-box-summary").textContent = t("已应用，等待重新对接"); await fetchState(); toast(t("位点选择已记录"));
+    });
+    $("structure-open-file").addEventListener('click',() => showView('files'));
   }
 
   function siteResidueSelections() {
     const values = app.selectedPocket?.residue_ids?.length
       ? app.selectedPocket.residue_ids
       : app.state?.target?.binding_site_residues || [];
-    return values.map((value) => {
-      const match = String(value).match(/^([A-Za-z0-9])[: ]?(\d+)/);
-      return match ? { chain: match[1], resi: Number(match[2]) } : null;
-    }).filter(Boolean);
+    return values.map(residueSelection).filter(Boolean);
   }
 
   function setProteinStyle(style) {
@@ -1780,8 +1861,7 @@
       return;
     }
     try {
-      app.proteinViewer.removeAllSurfaces?.();
-      app.proteinViewer.removeAllShapes(); app.boxShapes = [];
+      if (app.pocketShape) { app.proteinViewer.removeShape(app.pocketShape); app.pocketShape = null; }
       updatePocketLabel(app.selectedPocket);
       app.proteinViewer.setStyle(protein, {});
       if (style === "site") {
@@ -1796,7 +1876,7 @@
         if (app.selectedPocket) {
           const center = app.selectedPocket.box?.center || app.selectedPocket.center;
           if (center?.length === 3) {
-            app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.2, color: "#f2b562", alpha: 0.35 } });
+            app.pocketShape = app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.2, color: "#f2b562", alpha: 0.35 } });
           }
         }
         const focus = siteSelections.length === 1 ? siteSelections[0] : { or: siteSelections };
@@ -1805,9 +1885,10 @@
         $("viewer-hint").textContent = app.selectedPocket ? `${t("预测口袋")} · ${siteSelections.length} ${t("个残基")}` : `${t("参考位点")} · ${siteSelections.length} ${t("个残基")}`;
       } else {
         app.proteinViewer.setStyle(protein, { cartoon: { color: "spectrum" } });
-        $("viewer-hint").textContent = t("PDB 坐标系");
+        $("viewer-hint").textContent = t("坐标序列 · 模型 1");
         if (app.selectedPocket) showPocket(app.selectedPocket);
       }
+      if (app.proteinScene && style === "cartoon") { app.proteinScene.style = $("molecule-style").value; app.proteinScene.paint(); }
       app.proteinStyle = style;
       drawDockingBox();
       app.proteinViewer.render();
@@ -1818,7 +1899,7 @@
       app.proteinViewer.render();
       app.proteinStyle = "cartoon";
       document.querySelectorAll("[data-protein-style]").forEach((button) => button.classList.toggle("active", button.dataset.proteinStyle === "cartoon"));
-      $("viewer-hint").textContent = t("PDB 坐标系");
+      $("viewer-hint").textContent = t("坐标序列 · 模型 1");
       toast(error.message || t("无法显示结合位点。"), true);
     }
   }
@@ -1839,7 +1920,7 @@
 
   function resetRunBox() {
     resetParameterContext();
-    app.selectedPocket = null; app.structureArtifact = null; app.boxDraftRun = null;
+    app.selectedPocket = null; app.structureArtifact = null; app.boxDraftRun = null; app.resultTaskKey = null;
     BOX_AXES.forEach(axis => { $(`center-${axis}`).value = ""; $(`size-${axis}`).value = 24; });
     app.structureAtoms = []; renderBoxCoverage();
   }
@@ -1986,19 +2067,15 @@
 
   function showPocket(pocket) {
     if (!app.proteinViewer || !pocket) return;
-    app.proteinViewer.removeAllShapes();
+    if (app.pocketShape) app.proteinViewer.removeShape(app.pocketShape);
     updatePocketLabel(pocket);
     const center = pocket.box?.center || pocket.center;
     if (center?.length === 3) {
-      app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.6, color: "#f2b562", alpha: .9 } });
+      app.pocketShape = app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.6, color: "#f2b562", alpha: .9 } });
     }
-    const selections = (pocket.residue_ids || []).map((value) => {
-      const match = String(value).match(/^([A-Za-z0-9])[: ]?(\d+)/); return match ? { chain: match[1], resi: Number(match[2]) } : null;
-    }).filter(Boolean);
+    const selections = (pocket.residue_ids || []).map(residueSelection).filter(Boolean);
     selections.forEach((selection) => app.proteinViewer.setStyle(selection, { stick: { radius: .18, colorscheme: "Jmol" }, cartoon: { color: "#f2b562" } }));
-    // removeAllShapes above dropped the box; put it back so toggling styles
-    // does not silently lose it.
-    app.boxShapes = [];
+    // Pocket annotations do not remove other scene layers.
     drawDockingBox();
     app.proteinViewer.render();
   }
@@ -2033,9 +2110,11 @@
       if (!response.ok) throw new Error(`${t("结构请求失败")} (${response.status})`);
       const text = await response.text();
       $("ligand-viewer").innerHTML = "";
-      app.ligandViewer = window.$3Dmol.createViewer($("ligand-viewer"), { backgroundColor: getComputedStyle(document.documentElement).getPropertyValue("--surface-2").trim(), antialias: true });
+      app.ligandScene?.dispose();
+      app.ligandScene = new DrugStudioMolecule.Scene($("ligand-viewer"));
+      app.ligandViewer = app.ligandScene.viewer;
       const format = artifact.path.toLowerCase().endsWith(".sdf") ? "sdf" : "pdb";
-      app.ligandViewer.addModel(text, format);
+      app.ligandScene.add(text, format, "ball");
       app.ligandViewer.setStyle({}, { stick: { radius: .19, colorscheme: "Jmol" }, sphere: { scale: .28, colorscheme: "Jmol" } });
       app.ligandViewer.zoomTo(); app.ligandViewer.render();
       app.ligandKey = artifact.path;
@@ -2063,26 +2142,37 @@
   }
 
   function renderResults() {
-    const report = app.state.report || {};
-    const tasks = report.tasks || app.state.tasks || [];
-    const ligands = report.ligands || [];
-    const completed = tasks.filter((task) => task.status === "succeeded").length;
-    const pockets = currentPockets();
-    const metrics = [[t("对接任务"), `${completed}/${tasks.length}`, "flask-conical"], [t("候选口袋"), pockets.length, "target"], [t("最佳评分"), tasks.length ? fmt(Math.min(...tasks.map((task) => Number(task.best_pose?.affinity_kcal_mol ?? task.score ?? NaN)).filter(Number.isFinite)), 2) : "—", "trending-down"], [t("小分子"), ligands.length || app.state.ligands?.length || 0, "atom"]];
-    $("metric-row").innerHTML = metrics.map(([label, value, icon]) => `<div class="metric"><div><label>${label}</label><strong>${esc(value)}</strong></div><span class="metric-icon"><i data-lucide="${icon}"></i></span></div>`).join("");
-    const firstTask = tasks.find((task) => task.best_pose || task.score != null) || tasks[0];
-    const score = firstTask ? (firstTask.best_pose?.affinity_kcal_mol ?? firstTask.score_kcal_mol ?? firstTask.score) : null;
-    const ligandName = firstTask?.state_id || firstTask?.ligand_id || ligands[0]?.ligand_id || t("当前配体");
-    const engine = firstTask?.engine || firstTask?.engine_version || report.engine || t("对接引擎");
-    const sourceArtifact = artifactsByKind("assessment_data").at(-1) || artifactsByKind("docking_output").at(-1);
-    $("result-explanation").innerHTML = `<div class="explanation-item"><span>${esc(t("它是什么"))}</span><strong>${esc(ligandName)} ${esc(t("的对接姿态"))}${score != null ? t("，评分 {p0} kcal/mol", { p0: fmt(score, 3) }) : t("，等待评分")}</strong></div><div class="explanation-item"><span>${esc(t("它是怎么得到的"))}</span><strong>${esc(t("来自当前项目的结构、口袋和配体产物；"))}${esc(engine)} ${esc(t("的版本与参数记录在运行详情中。"))}</strong><button type="button" class="explanation-link" data-provenance-artifact="${esc(sourceArtifact?.artifact_id || "")}">${esc(t("查看来源链"))}</button></div><div class="explanation-item"><span>${esc(t("下一步可以做什么"))}</span><div class="explanation-actions"><button type="button" class="secondary-button" data-open-view="structure">${esc(t("查看姿态"))}</button><button type="button" class="secondary-button" data-open-view="review">${esc(t("审核口袋"))}</button></div></div>`;
-    $("result-explanation").querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.openView)));
-    $("result-explanation").querySelectorAll("[data-provenance-artifact]").forEach((button) => button.addEventListener("click", () => loadProvenance(button.dataset.provenanceArtifact)));
-    $("result-attempt").textContent = report.docking_attempt ? t("第 {p0} 次运行", { p0: report.docking_attempt }) : t("最近一次报告");
-    $("task-table").innerHTML = tasks.length ? tasks.map((task, index) => { const score = task.best_pose?.affinity_kcal_mol ?? task.score_kcal_mol ?? task.score; return `<tr data-result-row="${index}" tabindex="0"><td>${esc(task.state_id || task.ligand_id || "—")}</td><td class="mono-cell">${esc(task.task_id || "—")}</td><td class="score">${fmt(score, 3)} kcal/mol</td><td>${esc(task.qc_pass_count ?? "—")}</td><td><span class="state-tag ${task.status === "succeeded" || task.status === "complete" ? "success" : task.status === "failed" ? "failed" : ""}">${esc(task.status || "—")}</span></td></tr>`; }).join("") : `<tr><td colspan="5" class="muted">${esc(t("暂无对接任务。"))}</td></tr>`;
-    $("property-table").innerHTML = ligands.length ? ligands.map((item) => { const p = item.properties || {}; const alerts = (p.alerts?.pains || []).length + (p.alerts?.brenk || []).length; return `<tr><td>${esc(item.ligand_id)}</td><td>${fmt(p.mw)}</td><td>${fmt(p.logp)}</td><td>${fmt(p.tpsa)}</td><td>${fmt(p.qed, 3)}</td><td>${alerts ? `<span style="color:var(--amber)">${alerts}</span>` : `<span style="color:var(--teal)">0</span>`}</td></tr>`; }).join("") : `<tr><td colspan="6" class="muted">${t("暂无分子评估结果。")}</td></tr>`;
-    $("limitations-list").innerHTML = (report.limitations || [t("暂无评估报告。")]).map((item) => `<div class="limitation">${esc(item)}</div>`).join("");
-    document.querySelectorAll("[data-result-row]").forEach((row) => row.addEventListener("click", () => showView("structure")));
+    const report = app.state.report || {}, results = app.state.results || {tasks:[], summary:{}}, tasks = results.tasks, summary = results.summary;
+    const ligands = report.ligands || [], pockets = currentPockets(), references = app.state.target?.binding_site_residues || [];
+    const metrics = [[t("对接任务"), `${summary.succeeded || 0}/${summary.total || 0}`], [pockets.length ? t("候选口袋") : t("参考位点"), pockets.length || (references.length ? `${references.length} ${t("个残基")}` : "—")], [t("最佳评分"), summary.groups?.length > 1 ? t("按协议分组") : fmt(summary.best_kcal_mol, 3)], [t("姿态"), summary.poses || 0]];
+    $("metric-row").innerHTML = metrics.map(([label,value],index) => `<div class="metric"><div><label>${esc(label)}</label><strong>${esc(value)}</strong></div><span class="metric-icon"><i data-lucide="${["flask-conical","target","trending-down","atom"][index]}"></i></span></div>`).join("");
+    $("result-explanation").innerHTML = `<span class="muted">${esc(t(results.stale ? "结果已失效，请重新对接。" : "选择任务查看对应受体、姿态与质控。"))}</span>`;
+    $("result-attempt").textContent = `${t("第 {p0} 次运行", {p0:results.attempt || 1})} · ${summary.ligands || 0} ${t("小分子")}`;
+    $("task-table").innerHTML = tasks.length ? tasks.map((task,index) => `<tr data-result-row="${index}" tabindex="0"><td>${esc(task.state_id || task.ligand_id || "—")}</td><td class="mono-cell">${esc(task.task_id)}<small> · ${esc(task.engine)}</small></td><td class="score" title="${esc(t("同一受体和对接协议下，QC 通过姿态中的最低 Vina 评分；不是实验亲和力。"))}">${fmt(task.score,3)}${task.score != null ? " kcal/mol" : ""}</td><td>${task.qc_pass_count ?? "—"}/${task.pose_count ?? "—"}</td><td><span class="state-tag ${task.status === 'succeeded' ? 'success' : task.status === 'failed' ? 'failed' : ''}">${esc(task.status)}</span></td></tr>`).join("") : `<tr><td colspan="5">${esc(t("暂无对接任务。"))}</td></tr>`;
+    $("property-table").innerHTML = ligands.length ? ligands.map(item => { const p = item.properties || {}; const alerts = p.alerts ? (p.alerts.pains || []).length + (p.alerts.brenk || []).length : null; return `<tr><td>${esc(item.ligand_id)}</td><td>${fmt(p.mw)}</td><td>${fmt(p.logp)}</td><td>${fmt(p.tpsa)}</td><td>${fmt(p.qed,3)}</td><td>${alerts ?? "—"}</td></tr>`; }).join("") : `<tr><td colspan="6">${t("暂无分子评估结果。")}</td></tr>`;
+    $("limitations-list").innerHTML = (report.limitations || []).map(item => `<div class="limitation">${esc(item)}</div>`).join("");
+    const selected = tasks.find(task => task.task_id === app.resultTaskKey);
+    if (selected) showResultDetail(selected);
+    $("task-table").querySelectorAll("[data-result-row]").forEach(row => {
+      const open = () => showResultDetail(tasks[Number(row.dataset.resultRow)]);
+      row.addEventListener("click",open); row.addEventListener("keydown",e => { if (e.key === 'Enter') open(); });
+    });
+  }
+
+  function showResultDetail(task) {
+    const previous = app.resultTaskKey === task.task_id ? $("result-pose-choice")?.value : null;
+    app.resultTaskKey = task.task_id;
+    const panel = $("result-explanation");
+    panel.innerHTML = `<div><strong>${esc(task.state_id || task.ligand_id)} · ${esc(task.receptor_id)} · ${esc(task.engine)}</strong><p>${t("姿态")} ${task.pose_count ?? '—'} · QC ${task.qc_pass_count ?? '—'} · ${fmt(task.score,3)} kcal/mol</p>${task.error ? `<p class="error">${esc(task.error)}</p>` : ''}<select id="result-pose-choice" class="select-control">${task.poses.map(p => `<option value="${p.record_index}">${t("姿态")} ${esc(p.mode)} · ${fmt(p.affinity_kcal_mol,3)} · QC ${p.qc_pass === true ? 'pass' : p.qc_pass === false ? 'fail' : '—'} ${esc(p.qc_reason || '')}</option>`).join('')}</select><button id="result-open-pose" class="secondary-button" ${task.viewable ? '' : 'disabled'}>${t("查看姿态")}</button>${!task.viewable ? `<p>${t("缺少可核验的受体或姿态来源，无法叠合。")}</p>` : ''}<details><summary>${t("方法与来源")}</summary><pre>${esc(JSON.stringify({attempt:task.attempt,protocol:task.protocol,receptor:task.receptor_artifact?.path,poses:task.pose_artifact?.path},null,2))}</pre></details></div>`;
+    if (previous != null && task.poses.some(p => String(p.record_index) === previous)) $("result-pose-choice").value = previous;
+    else if (task.best_pose) $("result-pose-choice").value = String(task.best_pose.record_index);
+    $("result-open-pose").addEventListener("click", async () => {
+      const index = $("result-pose-choice").value;
+      disposeViewers(); app.structureArtifact = task.receptor_artifact;
+      renderStructureChoices(); renderPoseChoices(); $("pose-select").value = `${task.task_id}:${index}`;
+      fillBoxInputs({center:task.protocol.center || [],size:task.protocol.size || []});
+      showView("structure");
+    });
   }
 
   async function loadProvenance(artifactId) {
@@ -2336,7 +2426,7 @@
     }));
     $("open-terminal").addEventListener("click", toggleTerminalDock);
     $("close-terminal").addEventListener("click", closeTerminalDock);
-    $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { app.proteinViewer.removeAllShapes(); app.boxShapes = []; drawDockingBox(); fitProteinView(); } });
+    $("refresh-button").addEventListener("click", () => { fetchState(); fetchProjects(); }); $("workflow-refresh").addEventListener("click", fetchState); $("workflow-continue").addEventListener("click", continueWorkflow); $("workflow-pause").addEventListener("click", () => sendControl("pause")); $("workflow-cancel").addEventListener("click", () => sendControl("cancel")); $("rerun-stage").addEventListener("click", rerunFromSelectedStage); $("save-pricing").addEventListener("click", savePricing); $("run-selector").addEventListener("change", (event) => selectRun(event.target.value)); $("project-selector").addEventListener("change", (event) => selectProject(event.target.value)); $("reset-protein").addEventListener("click", () => { if (app.proteinViewer) { drawDockingBox(); fitProteinView(); } });
     $("refresh-files").addEventListener("click", refreshProjectFiles); $("save-file").addEventListener("click", saveProjectFile); $("restart-terminal").addEventListener("click", restartTerminal); $("chat-form").addEventListener("submit", sendChat); $("new-file").addEventListener("click", async () => { const name = window.prompt(t("新文件名（相对项目根目录）")); if (!name) return; const path = [app.fileDirectory, name].filter(Boolean).join("/"); try { const response = await postJson("/api/project/file", { path, content: "" }); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); await refreshProjectFiles(); await openProjectFile(data.path); } catch (error) { toast(error.message, true); } });
     $("save-module-settings").addEventListener("click", saveModuleConfig);
     $("refresh-module-settings").addEventListener("click", fetchModuleConfig);
@@ -2357,8 +2447,9 @@
     $("chat-input").addEventListener("input", resizeChatInput);
     $("chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("chat-form").requestSubmit(); } });
     document.querySelectorAll("[data-protein-style]").forEach((button) => button.addEventListener("click", () => setProteinStyle(button.dataset.proteinStyle)));
-    $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
-    $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
+    bindMolecularControls();
+    $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; renderPoseChoices(); await loadProtein(); });
+    $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact, view = app.proteinViewer?.getView(); disposeViewers(); app.structureArtifact = picked; await loadProtein(); if (view && app.structureArtifact === picked && app.proteinViewer) { app.proteinViewer.setView(view); app.proteinViewer.render(); } });
     $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", submitReview);
     $("review-stage").addEventListener("change", renderReviewStage);
     $("save-parameters").addEventListener("click", saveParameters);

@@ -33,6 +33,8 @@ jobs:
       - run: node --check src/drugstudio/web/static/app.js
       - run: node --check src/drugstudio/web/static/preferences.js
       - run: node --check src/drugstudio/web/static/chat-renderer.js
+      - run: node --check src/drugstudio/web/static/molecular-viewer.js
+      - run: node --test tests/molecular-selection.test.js
   review-browser:
     runs-on: ubuntu-latest
     steps:

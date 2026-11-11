@@ -84,7 +84,24 @@
             <div class="panel viewer-panel">
               <div class="panel-toolbar"><div class="toolbar-title"><span class="live-indicator"></span>结构视图</div><div class="toolbar-actions protein-style-control"><button class="tool-button active" data-protein-style="cartoon">整体</button><button class="tool-button" data-protein-style="site">结合位点</button><button class="tool-button" id="toggle-box" aria-pressed="false" title="显示或隐藏对接盒线框">对接盒</button></div></div>
               <div id="protein-viewer" class="viewer-canvas"><div class="viewer-placeholder"><i data-lucide="loader-circle"></i><span>正在加载结构</span></div></div>
-              <div class="viewer-footer"><span id="structure-file" class="mono">—</span><span id="box-readout" class="box-readout" hidden></span><span id="viewer-hint">PDB 坐标系</span></div>
+              <div class="viewer-footer"><span id="structure-file" class="mono" hidden>—</span><span id="box-readout" class="box-readout" hidden></span><span id="viewer-hint"></span></div>
+              <div class="molecule-sequence" id="structure-sequence" aria-label="坐标序列"></div>
+              <details class="molecule-tools"><summary>选择与显示</summary>
+                <div class="molecule-control-row"><label>显示方式 <select id="molecule-style" class="select-control"><option value="cartoon">Cartoon</option><option value="sticks">Sticks</option><option value="lines">Lines</option><option value="ball">Ball &amp; stick</option></select></label><label><input type="checkbox" id="molecule-surface">表面</label><label>透明度 <input type="range" id="surface-opacity" min="0.1" max="1" step="0.1" value="0.5"></label><span id="surface-status" role="status"></span></div>
+                <form id="selection-form" class="molecule-control-row"><input id="selection-expression" class="text-input" aria-label="选择表达式" placeholder="chain A and resi 45-60" autocomplete="off"><button class="secondary-button" type="submit">选择</button></form>
+                <p id="selection-message" role="status"></p>
+                <div class="molecule-control-row"><button type="button" class="tool-button" id="selection-focus">聚焦选择</button><button type="button" class="tool-button" id="selection-clear">清除选择</button><button type="button" class="tool-button" id="selection-label">残基标签</button><button type="button" class="tool-button" id="selection-distance">测量距离</button><button type="button" class="tool-button" id="selection-chat">发送到对话</button><button type="button" class="tool-button" id="selection-save">保存视图</button><button type="button" class="tool-button" id="selection-restore">恢复视图</button><button type="button" class="tool-button" id="selection-image">导出图片</button></div>
+                <details><summary>表达式示例</summary><pre>chain A and resi 45-60
+resn ASP+GLU
+protein and not hydrogen
+select ligand, resn LIG
+select site, byres (protein within 5 of ligand)
+show sticks, site
+color orange, site
+zoom site</pre><p>支持上述选择子、and/or/not、括号、within/byres。model 从 0 开始；仅显示文件第一个坐标模型。resi 支持插入码；空链用 chain ""。不执行 PyMOL 脚本。</p></details>
+                <details><summary>将选择应用到对接盒</summary><div class="molecule-control-row"><label>边距 Å <input id="selection-padding" type="number" min="0" max="30" step="1" value="5"></label><button class="secondary-button" type="button" id="selection-box">预览候选盒</button></div><p id="selection-box-summary"></p><label>选择理由 <input id="selection-reason" class="text-input"></label><button type="button" class="primary-button" id="selection-apply">应用到工作流</button><p>预览仅修改草稿；应用会记录结构来源和选择理由，并使已有对接结果失效，等待重跑。</p></details>
+                <details><summary>结构来源</summary><pre id="structure-source"></pre><button type="button" class="tool-button" id="structure-open-file">从项目文件打开</button></details>
+              </details>
             </div>
             <aside class="panel pocket-panel">
               <div class="panel-heading"><div><div class="eyebrow">候选假设</div><h2>候选口袋</h2></div><span class="count-badge" id="pocket-count">0</span></div>
@@ -108,7 +125,7 @@
           <section class="explanation-strip" id="result-explanation"></section>
           <section class="provenance-panel" id="result-provenance" hidden></section>
           <div class="results-grid"><div class="panel results-panel"><div class="panel-heading"><div><div class="eyebrow">对接输出</div><h2>姿态评分</h2></div><span class="muted mono" id="result-attempt">—</span></div><div class="table-wrap"><table><thead><tr><th>配体状态</th><th>任务</th><th>评分</th><th>质控姿态</th><th>状态</th></tr></thead><tbody id="task-table"></tbody></table></div></div><div class="panel results-panel"><div class="panel-heading"><div><div class="eyebrow">分子筛选</div><h2>性质</h2></div></div><div class="table-wrap"><table><thead><tr><th>配体</th><th>分子量</th><th>cLogP</th><th>TPSA</th><th>QED</th><th>风险提示</th></tr></thead><tbody id="property-table"></tbody></table></div></div></div>
-          <div class="panel limitations-panel"><div class="eyebrow">解释边界</div><div id="limitations-list" class="limitations-list"></div></div>
+          <details class="panel molecule-tools"><summary>方法与来源</summary><div id="limitations-list" class="limitations-list"></div></details>
         </section>
 
         <section class="view" id="view-review">
@@ -158,6 +175,7 @@
   <script src="/static/vendor/mhchem.min.js"></script>
   <script src="/static/vendor/highlight.min.js"></script>
   <script src="/static/chat-renderer.js"></script>
+  <script src="/static/molecular-viewer.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

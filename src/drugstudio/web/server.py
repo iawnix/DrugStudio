@@ -28,6 +28,7 @@ import termios
 import uuid
 import fcntl as file_control
 import hmac
+import hashlib
 from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -35,6 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .results import presentation
 from .. import parameters
 from ..events import EventWriter
 from ..workbench import (
@@ -871,10 +873,7 @@ class WebApplication:
                             "residues": len(item.get("residue_ids") or []),
                             "selected": bool(item.get("selected")),
                             "review_recommended": bool(item.get("human_review_recommended"))})
-        tasks = manifest.get("tasks") or []
-        scores = [task.get("best_pose", {}).get("affinity_kcal_mol")
-                  for task in tasks if isinstance(task, dict)]
-        scores = sorted(value for value in scores if isinstance(value, (int, float)))
+        results = presentation(run_root, manifest, _latest_json_artifact(run_root, manifest, "assessment_data"))
         values = parameters.load(run_root)
         return {
             "run_id": manifest.get("run_id"),
@@ -884,11 +883,7 @@ class WebApplication:
             "ligand_count": len(manifest.get("ligands") or []),
             "stages": stages,
             "pocket_candidates": pockets,
-            "docking_tasks": {"total": len(tasks),
-                              "succeeded": sum(1 for task in tasks
-                                               if isinstance(task, dict) and task.get("status") == "succeeded"),
-                              "best_kcal_mol": scores[0] if scores else None,
-                              "median_kcal_mol": scores[len(scores) // 2] if scores else None},
+            "docking_tasks": results["summary"],
             "failures": [_small_value(item) for item in (manifest.get("failures") or [])[-3:]],
             "human_decisions": [{"stage": item.get("stage"), "action": item.get("action"),
                                  "actor": item.get("actor"), "reason": item.get("reason")}
@@ -1158,6 +1153,7 @@ class WebApplication:
                     "kind": item.get("kind"),
                     "path": item.get("path"),
                     "sha256": item.get("sha256"),
+                    "parent_ids": item.get("parent_ids", []),
                     "metadata": _small_metadata(item.get("metadata", {})),
                 }
                 for item in items
@@ -1188,6 +1184,7 @@ class WebApplication:
             "decisions": raw.get("decisions", [])[-30:],
             "failures": raw.get("failures", []),
             "report": report,
+            "results": presentation(run_root, raw, report),
             "model": model_info,
             "costs": self.cost_summary(run_root),
             "control_request": self.events_for(run_root).control_request(),
@@ -1587,6 +1584,35 @@ class WebApplication:
             raise ValueError("unsupported review action")
         if not reason:
             raise ValueError("a scientific reason is required")
+        selection = payload.get("selection")
+        if selection is not None:
+            if stage != "docking_box" or action != "override" or not isinstance(selection, dict):
+                raise ValueError("selection is only supported for a docking box override")
+            raw = self.manifest(run_root)
+            artifact = next((a for items in raw.get("artifacts", {}).values() for a in items
+                             if a.get("artifact_id") == selection.get("artifact_id")
+                             and a.get("sha256") == selection.get("sha256")), None)
+            if not artifact or artifact.get("kind") not in {
+                    "prepared_receptor_pdb", "repaired_receptor_pdb", "supplied_structure",
+                    "experimental_structure", "predicted_structure"}:
+                raise ValueError("selection structure does not belong to this run")
+            with self.file_path(artifact["path"], run_root).open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != artifact["sha256"]:
+                    raise ValueError("structure file changed since it was registered; register the updated structure first")
+            linked = [t["receptor_artifact"] for t in presentation(run_root, raw)["tasks"]
+                      if t["receptor_artifact"]]
+            if not linked:
+                prepared = [a for items in raw.get("artifacts", {}).values() for a in items
+                            if a.get("kind") == "prepared_receptor_pdb"]
+                linked = prepared[-1:]
+            if linked and any(a["sha256"] != artifact["sha256"] for a in linked):
+                raise ValueError("selected structure differs from the docking receptor; prepare that receptor first")
+            residues = selection.get("residues")
+            if selection.get("model") != 1 or not isinstance(residues, list) or not 0 < len(residues) <= 10000:
+                raise ValueError("provide observed residues from coordinate model 1")
+            if len(json.dumps(selection)) > 32000:
+                raise ValueError("selection is too large")
+            reason += "\nViewer selection: " + json.dumps(selection, ensure_ascii=False, sort_keys=True)
         command = [sys.executable, "-m", "drugstudio.cli", "review",
                    "--run-root", str(run_root), "--stage", stage,
                    "--action", action, "--reason", reason, "--actor", actor]

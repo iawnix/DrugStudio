@@ -20,7 +20,7 @@ class PresentationPreferences(harness.BrowserHarness):
         self.assertEqual(self.page.get_attribute('html', 'lang'), 'en')
         self.assertEqual(self.page.get_attribute('html', 'data-theme'), 'dark')
         self.assertEqual(self.page.input_value('#theme-selector'), 'dark')
-        self.assertEqual(self.page.inner_text('.brand-sub'), 'Structure research workbench')
+        self.assertEqual(self.page.inner_text('.brand-sub'), 'Drug design workstation')
 
     def test_locale_updates_nodes_and_preserves_pending_forms(self):
         self.page.fill('#chat-input', '不要更改我的研究问题')
@@ -36,7 +36,7 @@ class PresentationPreferences(harness.BrowserHarness):
         self.assertEqual(self.page.input_value('#run-selector'), run)
         self.switch_language()
         self.assertEqual(self.page.inner_text('#workflow-node-title'), '分子对接')
-        self.assertEqual(self.page.inner_text('.brand-sub'), '结构研究工作台')
+        self.assertEqual(self.page.inner_text('.brand-sub'), '药物设计工作站')
         self.assertEqual(self.page.input_value('#param-exhaustiveness'), '23')
 
     def test_module_and_model_drafts_survive_locale_switch(self):

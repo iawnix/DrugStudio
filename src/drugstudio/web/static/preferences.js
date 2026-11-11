@@ -3,7 +3,7 @@
   "use strict";
   const MESSAGES = {
   "en": {
-    "结构研究工作台": "Structure research workbench",
+    "药物设计工作站": "Drug design workstation",
     "正在连接": "Connecting",
     "已连接": "Connected",
     "已断开": "Disconnected",
@@ -155,6 +155,7 @@
     "地址": "URL",
     "留空以保留当前密钥": "Leave blank to keep the current key",
     "尚未配置 API Key": "API key not configured",
+    "设置保存在本机服务器，重启后自动读取。已配置的密钥不会回显，留空保存会保留原密钥。": "Settings are saved on this server and restored after restart. Configured keys are not displayed; leave the field blank to keep the existing key.",
     "清除已保存的 API Key": "Clear saved API key",
     "工作区访问": "Workspace access",
     "解锁工作台": "Unlock workbench",

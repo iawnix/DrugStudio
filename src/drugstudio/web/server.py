@@ -132,6 +132,23 @@ class WebApplication:
         self._module_config_lock = threading.Lock()
         self._metadata_lock = threading.Lock()
         self.workbench_root = self.runs_root / ".workbench"
+        self.model_config_path = self.workbench_root / "model-connection.secret.json"
+        try:
+            saved_model = json.loads(self.model_config_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            raise ValueError("cannot load saved model connection settings") from None
+        else:
+            try:
+                if not isinstance(saved_model, dict) or any(
+                    not isinstance(saved_model.get(key), str) for key in self._llm_config
+                ):
+                    raise ValueError("invalid settings")
+                self._llm_config = self._validate_model_config(saved_model)
+                self.model_config_path.chmod(0o600)
+            except (OSError, ValueError):
+                raise ValueError("cannot load saved model connection settings") from None
         self.module_config_path = self.workbench_root / "module-settings.json"
         self.projects_index = self.workbench_root / "projects.json"
         self.default_project_root = self._initial_project_root()
@@ -379,7 +396,8 @@ class WebApplication:
                 "api_key_configured": bool(self._llm_config["api_key"]),
             }
 
-    def update_model_config(self, payload: dict) -> dict:
+    @staticmethod
+    def _validate_model_config(payload: dict) -> dict:
         base_url = str(payload.get("base_url") or "").strip().rstrip("/")
         model = str(payload.get("model") or "").strip()
         api_key = str(payload.get("api_key") or "").strip()
@@ -392,13 +410,20 @@ class WebApplication:
                 raise ValueError("API URL must be an http(s) base URL without credentials or query data")
         if not model:
             raise ValueError("model name is required")
+        return {"base_url": base_url, "model": model, "api_key": api_key}
+
+    def update_model_config(self, payload: dict) -> dict:
+        values = self._validate_model_config(payload)
         with self._llm_config_lock:
-            self._llm_config["base_url"] = base_url
-            self._llm_config["model"] = model
-            if api_key:
-                self._llm_config["api_key"] = api_key
-            elif payload.get("clear_api_key"):
-                self._llm_config["api_key"] = ""
+            if not values["api_key"] and not payload.get("clear_api_key"):
+                values["api_key"] = self._llm_config["api_key"]
+            # mkstemp creates a 0600 file; atomic replacement commits all three
+            # fields together. Publish to memory only after a successful save.
+            try:
+                atomic_json_write(self.model_config_path, values)
+            except OSError:
+                raise ValueError("cannot save model connection settings; check server storage permissions") from None
+            self._llm_config = values
         return self.model_config()
 
     def module_config(self) -> dict:
@@ -593,6 +618,7 @@ class WebApplication:
     def project_file(self, relative: str, *, allow_missing: bool = False, root: Path | None = None) -> Path:
         project_root = root or self.default_project_root
         candidate = (project_root / relative).resolve()
+        self._reject_private_file(candidate)
         try:
             candidate.relative_to(project_root)
         except ValueError as exc:
@@ -609,7 +635,7 @@ class WebApplication:
         entries = []
         children = sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))
         for path in children[:500]:
-            if path.is_symlink():
+            if path.is_symlink() or path.resolve().is_relative_to(self.workbench_root.resolve()):
                 continue
             info = {"name": path.name, "path": path.relative_to(project_root).as_posix(),
                     "kind": "directory" if path.is_dir() else "file"}
@@ -1565,9 +1591,14 @@ class WebApplication:
             raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "review command failed")
         return json.loads(completed.stdout)
 
+    def _reject_private_file(self, candidate: Path) -> None:
+        if candidate.is_relative_to(self.workbench_root.resolve()):
+            raise ValueError("workbench settings are private server files")
+
     def file_path(self, relative: str, run_root: Path | None = None) -> Path:
         run_root = run_root or self.default_run_root
         candidate = (run_root / relative).resolve()
+        self._reject_private_file(candidate)
         try:
             candidate.relative_to(run_root)
         except ValueError as exc:

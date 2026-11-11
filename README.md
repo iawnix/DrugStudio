@@ -123,10 +123,15 @@ server before it is shown as available. Settings are stored at
 workflow process starts; changing them does not alter a running job or any
 historical manifest.
 
-The model endpoint and API key remain in **模型连接**. API keys are kept in
-the server process and are never copied into module settings, manifests, or
-run logs. AlphaFold 3 terms acknowledgement is an explicit setting and is
-off by default; a GPU allocation and valid PBS commands are still required.
+The model endpoint, model name, and API key are saved through **模型连接**
+to `<runs-root>/.workbench/model-connection.secret.json` (owner-only mode
+`0600`). Saved settings override environment defaults on restart, including
+an explicitly cleared key. Leaving the key field blank preserves the current
+key. The API never returns the key, and project file browsing excludes the
+private `.workbench` directory. The local terminal runs as the server user
+and retains access to local files. Keep this settings file out of version
+control; keys are never copied into module settings, manifests, or run logs.
+AlphaFold 3 terms acknowledgement is an explicit setting and is off by default; a GPU allocation and valid PBS commands are still required.
 The same configuration is available to integrations through `GET` and `POST`
 `/api/module-config`.
 

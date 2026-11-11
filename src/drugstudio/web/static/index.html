@@ -24,7 +24,7 @@
     <header class="topbar">
       <div class="brand-lockup">
         <img class="brand-logo" src="/static/company-mark.png" alt="DrugStudio" width="40" height="40">
-        <div><div class="brand">DRUGSTUDIO</div><div class="brand-sub">结构研究工作台</div></div>
+        <div><div class="brand">DRUGSTUDIO</div><div class="brand-sub">药物设计工作站</div></div>
       </div>
       <div class="top-actions">
         <span class="connection-status"><span class="connection-dot" id="connection-dot"></span><span id="connection-label">正在连接</span></span>
@@ -142,6 +142,7 @@
       <label class="settings-field">API 地址<input id="model-base-url" class="input-control" type="url" placeholder="https://api.openai.com/v1" autocomplete="url"></label>
       <label class="settings-field">API Key<input id="model-api-key" class="input-control" type="password" placeholder="留空以保留当前密钥" autocomplete="new-password"></label>
       <div class="model-config-state"><span class="connection-dot offline" id="model-config-dot"></span><span id="model-config-status">尚未配置 API Key</span></div>
+      <p class="muted">设置保存在本机服务器，重启后自动读取。已配置的密钥不会回显，留空保存会保留原密钥。</p>
       <label class="clear-key-option"><input id="clear-model-api-key" type="checkbox">清除已保存的 API Key</label>
       <div class="dialog-actions"><button class="secondary-button" type="button" data-close-model-settings>取消</button><button class="primary-button" type="submit" id="save-model-settings">保存设置</button></div>
     </form>

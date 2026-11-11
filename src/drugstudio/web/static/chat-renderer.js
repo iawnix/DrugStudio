@@ -71,7 +71,7 @@
     if (language && window.hljs.getLanguage(language) && token.content.length < 100000) {
       try { code = window.hljs.highlight(token.content, { language, ignoreIllegals: true }).value; } catch (_) { /* Plain code remains readable. */ }
     }
-    return `<div class="chat-code"><div class="chat-code-toolbar"><span>${escape(language || t('代码'))}</span><button type="button" data-copy-code>${escape(t('复制代码'))}</button></div><pre tabindex="0"><code class="hljs">${code}</code></pre></div>\n`;
+    return `<div class="chat-code"><div class="chat-code-toolbar"><span>${escape(language || t('代码'))}</span><button type="button" class="icon-button" data-copy-code title="${escape(t('复制代码'))}" aria-label="${escape(t('复制代码'))}"><i data-lucide="copy"></i><span class="sr-only">${escape(t('复制代码'))}</span></button></div><pre tabindex="0"><code class="hljs">${code}</code></pre></div>\n`;
   };
   md.renderer.rules.code_block = (tokens, index) => md.renderer.rules.fence(tokens, index);
   md.renderer.rules.table_open = () => `<div class="chat-table-scroll" tabindex="0" role="region" aria-label="${escape(t('表格'))}"><table>`;

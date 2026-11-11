@@ -86,3 +86,7 @@ input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius:
 input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 2px solid var(--surface); border-radius: 50%; background: var(--action); box-shadow: 0 0 0 1px var(--action); }
 input[type="range"]::-moz-range-track { height: 4px; border-radius: 4px; background: var(--line); }
 input[type="range"]::-moz-range-thumb { width: 10px; height: 10px; border: 2px solid var(--surface); border-radius: 50%; background: var(--action); box-shadow: 0 0 0 1px var(--action); }
+.sequence-chain button.selected { background: var(--accent-soft); color: var(--blue); border-color: var(--blue); box-shadow: inset 0 -2px var(--blue); }
+.reference-site-card { cursor: default; }
+.reference-site-card .site-source { color: var(--muted); font-size: 11px; }
+.reference-site-card .locate-site { margin-top: 10px; }

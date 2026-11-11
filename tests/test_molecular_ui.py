@@ -22,7 +22,7 @@ class MolecularUI(BrowserHarness):
         self.expression('chain A and resi 20 and name CA')
         self.assertIn('1 原子', self.page.inner_text('#viewer-hint'))
         selected = self.page.evaluate("window.__reviewViewer.selectedAtoms({model:0}).filter(a=>a.style.stick?.color==='orange').map(a=>a.resi)")
-        self.assertEqual(selected,[20])
+        self.assertEqual(selected,[20,20,20,20])
         self.page.click('#selection-save'); self.page.click('#selection-clear'); self.page.click('#selection-restore')
         self.assertIn('1 原子',self.page.inner_text('#viewer-hint'))
         self.expression('name CA and resi 10+20')
@@ -81,3 +81,13 @@ class MolecularUI(BrowserHarness):
         self.page.click('#refresh-button')
         self.page.wait_for_timeout(200)
         self.assertEqual(self.page.input_value('#pose-select'),'t:1')
+
+    def test_overall_view_uses_cartoon_and_site_button_is_actionable(self):
+        self.open_structure()
+        model_style = self.page.evaluate("window.__reviewViewer.getModel(0).selectedAtoms({}).map(a => Object.keys(a.style || {}))")
+        self.assertTrue(all('cartoon' in styles and 'stick' not in styles for styles in model_style))
+        self.page.click('[data-protein-style="site"]')
+        self.page.wait_for_function("document.querySelector('#viewer-hint').textContent.includes('残基')")
+        self.assertGreater(self.page.evaluate("window.__reviewViewer.selectedAtoms({model:0}).filter(a => a.style?.stick).length"),0)
+        self.page.click('[data-protein-style="cartoon"]')
+        self.assertTrue(self.page.evaluate("window.__reviewViewer.getModel(0).selectedAtoms({}).every(a => a.style?.cartoon && !a.style?.stick)"))

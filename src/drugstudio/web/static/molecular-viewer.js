@@ -69,11 +69,18 @@
     constructor(host) {
       this.host = host; host.innerHTML = '';
       this.viewer = root.$3Dmol.createViewer(host, {backgroundColor:getComputedStyle(document.documentElement).getPropertyValue('--surface-2').trim(),antialias:true});
-      this.named = {}; this.overlays = []; this.selection = new Set(); this.style = 'cartoon'; this.color = 'orange'; this.surfaceGeneration = 0; this.labels = []; this.measurements = [];
+      this.models = []; this.siteMode = false; this.named = {}; this.overlays = []; this.selection = new Set(); this.style = 'cartoon'; this.color = 'orange'; this.surfaceGeneration = 0; this.labels = []; this.measurements = [];
       this.resize = new ResizeObserver(() => { if (host.clientWidth && host.clientHeight) this.viewer.resize(); }); this.resize.observe(host);
     }
     add(text, format, style = 'cartoon') {
       const model = this.viewer.addModel(text, format, {altLoc:'*'});
+      // Keep explicit handles: 3Dmol.getModel(missingId) returns the LAST
+      // model, so asking for an absent ligand can accidentally restyle protein.
+      if (!this.models.length) this.style = style;
+      this.models.push(model);
+      model.selectedAtoms({}).forEach(atom => {
+        for (const field of ['chain','icode','altLoc']) atom[field] = String(atom[field] || '').trim();
+      });
       model.setStyle({}, styles[style]); this.bindPicking(); return model;
     }
     atoms() { return this.viewer.selectedAtoms({}); }
@@ -86,18 +93,24 @@
       });
     }
     eachSelection(ids, callback) {
-      const groups = new Map(); this.atoms().filter(a => ids.has(atomKey(a))).forEach(a => { if (!groups.has(a.model)) groups.set(a.model, []); groups.get(a.model).push(a.index); });
-      groups.forEach((index, model) => callback({model,index}));
+      // Apply styles by residue selectors. 3Dmol's low-level atom-index
+      // selector is version-dependent; residue selectors are stable and keep
+      // the highlighted sequence and structure in sync.
+      const seen = new Set();
+      this.atoms().filter(a => ids.has(atomKey(a))).forEach(a => {
+        const key = residueKey(a); if (seen.has(key)) return; seen.add(key);
+        callback({model:a.model,chain:a.chain,resi:a.resi,icode:a.icode || ''});
+      });
     }
     setSelection(ids) { this.selection = new Set(ids); this.paint(); this.onSelection?.(this.selected()); }
     paint() {
-      this.viewer.setStyle({model:0}, styles[this.style] || styles.cartoon);
-      this.viewer.getModel(1)?.setStyle({}, styles.ball);
+      this.models[0]?.setStyle({}, this.siteMode ? {cartoon:{color:'#aab4bf',opacity:.3}} : styles[this.style] || styles.cartoon);
+      this.models.slice(1).forEach(model => model.setStyle({}, styles.ball));
       this.overlays.forEach(layer => this.eachSelection(new Set(layer.ids), sel => this.viewer.addStyle(sel, layer.style)));
-      this.eachSelection(this.selection, sel => this.viewer.addStyle(sel, {stick:{color:this.color,radius:.24}}));
+      this.eachSelection(this.selection, sel => this.viewer.addStyle(sel, {cartoon:{color:this.color,opacity:1},stick:{color:this.color,radius:.24}}));
       this.viewer.render();
     }
-    focus() { if (this.selection.size) { const atoms = this.selected(); this.viewer.zoomTo({predicate:a => atoms.includes(a)}); } else this.viewer.zoomTo(); this.viewer.render(); }
+    focus() { if (this.selection.size) { const atoms = this.selected(); this.viewer.zoomTo({predicate:a => atoms.includes(a)}); } else this.viewer.zoomTo(); if (this.host.clientWidth > 0 && this.host.clientWidth < this.host.clientHeight) this.viewer.zoom(this.host.clientWidth / this.host.clientHeight); this.viewer.render(); }
     async surface(show, opacity = .5) {
       const version = ++this.surfaceGeneration;
       this.viewer.removeAllSurfaces(); this.surfaceOn = show;
@@ -132,9 +145,9 @@
     }
     labelSelection() { this.labels.forEach(l => this.viewer.removeLabel(l)); this.labels = []; const seen = new Set(); this.selected().forEach(a => { const key = residueKey(a); if (seen.has(key)) return; seen.add(key); this.labels.push(this.viewer.addLabel(`${a.chain || '∅'}:${a.resi}${a.icode || ''} ${a.resn || ''}`, {position:a,fontSize:12,backgroundOpacity:.65})); }); this.viewer.render(); }
     distance() { const atoms = this.selected(); if (atoms.length !== 2) throw new Error('Select exactly two atoms (for example name CA and resi 10+20)'); const [a,b] = atoms; const d = Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z); this.measurements.push(this.viewer.addLine({start:a,end:b,dashed:true,color:'orange'})); this.labels.push(this.viewer.addLabel(`${d.toFixed(2)} Å`,{position:{x:(a.x+b.x)/2,y:(a.y+b.y)/2,z:(a.z+b.z)/2},fontSize:12})); this.viewer.render(); return d; }
-    save() { return {selection:[...this.selection],overlays:this.overlays,named:Object.fromEntries(Object.entries(this.named).map(([k,v]) => [k,[...v]])),style:this.style,color:this.color,view:this.viewer.getView()}; }
-    restore(data) { if (!data) return; this.overlays = data.overlays || []; this.named = Object.fromEntries(Object.entries(data.named || {}).map(([k,v]) => [k,new Set(v)])); this.style = styles[data.style] ? data.style : 'cartoon'; this.color = data.color || 'orange'; this.setSelection(new Set(data.selection || [])); if (Array.isArray(data.view)) this.viewer.setView(data.view); this.viewer.render(); }
-    dispose() { ++this.surfaceGeneration; this.resize.disconnect(); this.viewer.clear(); }
+    save() { return {selection:[...this.selection],siteMode:this.siteMode,overlays:this.overlays,named:Object.fromEntries(Object.entries(this.named).map(([k,v]) => [k,[...v]])),style:this.style,color:this.color,view:this.viewer.getView()}; }
+    restore(data) { if (!data) return; this.siteMode = Boolean(data.siteMode); this.overlays = data.overlays || []; this.named = Object.fromEntries(Object.entries(data.named || {}).map(([k,v]) => [k,new Set(v)])); this.style = styles[data.style] ? data.style : 'cartoon'; this.color = data.color || 'orange'; this.setSelection(new Set(data.selection || [])); if (Array.isArray(data.view)) this.viewer.setView(data.view); this.viewer.render(); }
+    dispose() { ++this.surfaceGeneration; this.resize.disconnect(); this.viewer.clear(); this.models = []; }
   }
   root.DrugStudioMolecule = {Scene,select,atomKey,residueKey,styles};
   if (typeof module !== 'undefined') module.exports = root.DrugStudioMolecule;

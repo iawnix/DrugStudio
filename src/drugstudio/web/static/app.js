@@ -34,7 +34,7 @@
       if (viewer) { viewer.setBackgroundColor(background); viewer.render(); }
     });
     if (app.proteinViewer) {
-      updatePocketLabel(app.selectedPocket);
+      updatePocketLabel(app.proteinScene?.siteMode ? app.selectedPocket : null);
       drawDockingBox();
     }
     if (app.terminal) app.terminal.options.theme = terminalTheme();
@@ -1372,11 +1372,11 @@
         if (article._signature === signature) return;
         article._signature = signature; article._source = source;
         article.className = `chat-message ${item.role === 'user' ? 'user' : 'assistant'}`;
-        article.innerHTML = `<div class="chat-role">${item.role === 'user' ? `<span class="chat-user-avatar">${esc(t('你'))}</span>` : '<span class="chat-avatar">DS</span>DrugStudio'}</div>
-          <div class="chat-content">${item.role === 'user' ? `<div class="chat-plain">${esc(source)}</div>` : window.DrugStudioChat.render(source)}</div>
+        article.setAttribute('aria-label', item.role === 'user' ? t('你的消息') : t('助手回复'));
+        article.innerHTML = `          <div class="chat-content">${item.role === 'user' ? `<div class="chat-plain">${esc(source)}</div>` : window.DrugStudioChat.render(source)}</div>
           ${item.actions?.length ? `<div class="chat-actions">${item.actions.map(action => `<span>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ''}</span>`).join('')}</div>` : ''}
           ${item.error ? `<div class="chat-error" role="status">${esc(item.error)}</div>` : ''}
-          ${item.role !== 'user' && !item.streaming ? `<button type="button" class="chat-message-copy" data-copy-message>${esc(t('复制回复'))}</button>` : ''}`;
+          ${item.role !== 'user' && !item.streaming ? `<button type="button" class="chat-message-copy icon-button" data-copy-message title="${esc(t('复制回复'))}" aria-label="${esc(t('复制回复'))}"><i data-lucide="copy"></i></button>` : ''}`;
       });
       articles.slice(messages.length).forEach(node => node.remove());
     } else {
@@ -1395,12 +1395,13 @@
     if (tail._signature !== tailSignature) {
       const reason = $('pending-reason')?.value || '';
       tail._signature = tailSignature;
-      tail.innerHTML = pendingActionCard() + (busy ? `<div class="chat-typing" aria-live="polite"><span class="chat-avatar">DS</span><span class="typing-dots"><i></i><i></i><i></i></span><span>${esc(t('正在处理'))}</span></div>` : '');
+      tail.innerHTML = pendingActionCard() + (busy ? `<div class="chat-typing" aria-live="polite"><span class="typing-dots"><i></i><i></i><i></i></span><span>${esc(t('正在处理'))}</span></div>` : '');
       if ($('pending-reason')) $('pending-reason').value = reason;
       $('approve-action')?.addEventListener('click', () => decideChatAction(true));
       $('reject-action')?.addEventListener('click', () => decideChatAction(false));
       window.DrugStudioControls.icons();
     }
+    window.DrugStudioControls.icons();
     container.scrollTop = follow ? container.scrollHeight : previousTop;
     updateChatJump();
     const current = app.chatSessions.find(item => item.chat_id === app.chatId);
@@ -1651,7 +1652,7 @@
         <div class="pocket-meta"><span>rank ${esc(pocket.rank)}</span><span>predictors ${(pocket.sources || []).join(" + ") || "P2Rank"}</span><span>P2Rank p ${fmt(pocket.p2rank_probability ?? pocket.probability, 2)}</span>${pocket.fpocket_druggability_score != null ? `<span>fpocket druggability ${fmt(pocket.fpocket_druggability_score, 2)}</span>` : ""}<span>${(pocket.residue_ids || []).length} residues</span><span>${esc(String(pocket.evidence_class || "computational_only").replaceAll("_", " "))}</span>${pocket.reference_site_overlap_count ? `<span>${pocket.reference_site_overlap_count} reference-site residues overlap</span>` : ""}${pocket.predictor_center_distance_A != null ? `<span>centers agree within ${fmt(pocket.predictor_center_distance_A, 1)} Å</span>` : ""}${pocket.human_review_recommended ? `<span>${t("建议审核")}</span>` : ""}</div>
       </div>`;
     }).join("") : referenceResidues.length
-      ? `<button class="pocket-card reference-site-card" type="button" data-reference-site><div class="pocket-row"><span class="pocket-name">${t("参考结合位点")}</span><span class="pocket-score">${t("来自输入")}</span></div><div class="pocket-meta"><span>${referenceResidues.length} specified residues</span><span>${t("并非独立预测的口袋")}</span></div></button>`
+      ? `<div class="pocket-card reference-site-card"><div class="pocket-row"><span class="pocket-name">${t("参考结合位点")}</span><span class="site-source">${t("来自输入")}</span></div><div class="pocket-meta"><span>${referenceResidues.length} ${t("个残基")}</span><span>${t("并非独立预测的口袋")}</span></div><button type="button" class="secondary-button locate-site" data-reference-site><i data-lucide="crosshair"></i>${t("定位位点")}</button></div>`
       : `<div class="empty-state">${esc(t("暂无口袋预测或参考位点。"))}</div>`;
     const quality = app.state.stage_results?.pocket?.metadata?.structure_quality;
     const qualityHtml = quality ? `<div class="quality-pill">Structure QC: ${esc(quality.gate)} · ${quality.chain_count} chains · median CA B ${fmt(quality.ca_bfactor_median, 1)}${quality.review_flags?.length ? ` · ${quality.review_flags.length} review flags` : ""}</div>` : "";
@@ -1662,7 +1663,7 @@
     }).join("") : `<div class="empty-state">${esc(t("暂无候选口袋。"))}</div>`;
     document.querySelectorAll("[data-pocket-rank]").forEach((node) => node.addEventListener("click", () => selectPocket(Number(node.dataset.pocketRank))));
     document.querySelectorAll("[data-review-rank]").forEach((node) => node.addEventListener("click", () => selectPocket(Number(node.dataset.reviewRank))));
-    $("pocket-list").querySelector("[data-reference-site]")?.addEventListener("click", () => setProteinStyle("site"));
+    $("pocket-list").querySelector("[data-reference-site]")?.addEventListener("click", async () => { if (!app.proteinScene) await loadProtein(); setProteinStyle("site"); $("protein-viewer").scrollIntoView({block:"nearest"}); });
     if (!app.selectedPocket && pockets.length) selectPocket(Number(pockets.find((item) => item.selected)?.rank || pockets[0].rank), false);
     else if (!app.selectedPocket) renderPocketDetail();
   }
@@ -1674,8 +1675,7 @@
       const size = app.selectedPocket.box?.size || [];
       fillBoxInputs({center, size});
       renderPocketDetail();
-      if (app.proteinStyle === "site") setProteinStyle("site");
-      else showPocket(app.selectedPocket);
+      if (rerender) setProteinStyle("site");
       onBoxInputChanged();
     }
     if (rerender) renderPockets();
@@ -1779,7 +1779,7 @@
 
   function residueSelection(value) {
     const match = String(value).match(/^(.*):(-?\d+)([A-Za-z]?)$/) || String(value).match(/^([A-Za-z]+)(-?\d+)([A-Za-z]?)$/);
-    return match ? {model:0, chain:match[1], resi:Number(match[2]), icode:match[3] || ""} : null;
+    return match ? {model:0, chain:match[1].trim(), resi:Number(match[2]), icode:match[3] || ""} : null;
   }
 
   function selectionViewKey() { return `drugstudio-view:${structureCoordinateKey()}:${$("pose-select").value}`; }
@@ -1789,14 +1789,15 @@
     if (!scene) return;
     const residues = scene.residues();
     $("structure-source").textContent = JSON.stringify({artifact:app.structureArtifact?.artifact_id,path:app.structureArtifact?.path,sha256:app.structureArtifact?.sha256,model:1},null,2);
-    $("molecule-style").value = 'cartoon'; $("molecule-surface").checked = false;
+    syncProteinControls(); $("molecule-surface").checked = false;
     $("selection-box-summary").textContent = ''; app.selectionDraft = null;
     $("structure-sequence").innerHTML = `<div class="sequence-caption">${t("坐标序列 · 模型 1")} · ${t("仅包含有坐标的残基；编号间隔不代表完整序列。")}</div>` + [...new Set(residues.map(r => r.chain))].map(chain => `<div class="sequence-chain"><span>${t("链")} ${esc(chain || '∅')}</span><div>${residues.map((r,i) => r.chain !== chain ? '' : `<button type="button" data-residue="${i}" title="${esc(`${r.chain || '∅'}:${r.resi}${r.icode} ${r.resn}`)}"><strong>${r.letter}</strong><small>${r.resi}${esc(r.icode)}</small></button>`).join('')}</div></div>`).join('');
     let anchor = null;
     scene.onSelection = atoms => {
       const keys = new Set(atoms.map(DrugStudioMolecule.residueKey));
       $("structure-sequence").querySelectorAll('[data-residue]').forEach(button => { const active = keys.has(residues[Number(button.dataset.residue)].key); button.classList.toggle('selected',active); button.setAttribute('aria-pressed',String(active)); });
-      $("viewer-hint").textContent = `${t("已选择")} ${keys.size} ${t("个残基")} · ${atoms.length} ${t("原子")}`;
+      const names = [...new Set(atoms.filter(a => a.model === 0).map(a => `${a.chain || '∅'}:${a.resi}${a.icode || ''}`))];
+      $("viewer-hint").textContent = atoms.length ? `${names.slice(0,4).join(', ')}${names.length > 4 ? '…' : ''} · ${t("已选择")} ${keys.size} ${t("个残基")} · ${atoms.length} ${t("原子")}` : `${t("点击序列中的残基以高亮并聚焦")} · ${t("已选择")} 0 ${t("个残基")} · 0 ${t("原子")}`;
       $("selection-message").textContent = '';
       app.selectionDraft = null; $("selection-box-summary").textContent = '';
     };
@@ -1807,6 +1808,7 @@
         residues.slice(Math.min(anchor,i),Math.max(anchor,i)+1).filter(r => r.chain === residue.chain).forEach(r => r.ids.forEach(id => chosen.add(id)));
       } else { const remove = residue.ids.every(id => chosen.has(id)); residue.ids.forEach(id => remove ? chosen.delete(id) : chosen.add(id)); anchor = i; }
       scene.setSelection(chosen);
+
     }));
     scene.onSelection(scene.selected());
   }
@@ -1814,7 +1816,7 @@
   function bindMolecularControls() {
     const action = (id, fn) => $(id).addEventListener('click', async () => { try { if (!app.proteinScene) throw new Error(t("请先打开结构")); if (id === 'selection-apply') await busy(id, () => fn(app.proteinScene)); else await fn(app.proteinScene); } catch (error) { $("selection-message").textContent = error.message; } });
     $("selection-form").addEventListener('submit',e => { e.preventDefault(); try { app.proteinScene?.command($("selection-expression").value); } catch (error) { $("selection-message").textContent = error.message; } });
-    $("molecule-style").addEventListener('change',e => { if (app.proteinScene) { app.proteinScene.style = e.target.value; app.proteinScene.paint(); } });
+    $("molecule-style").addEventListener('change',e => { if (app.proteinScene) { app.proteinScene.siteMode = false; app.proteinScene.style = e.target.value; app.proteinScene.paint(); syncProteinControls(); } });
     const surface = async () => { const scene = app.proteinScene; if (!scene) return; $("surface-status").textContent = t("正在更新"); try { await scene.surface($("molecule-surface").checked,Number($("surface-opacity").value)); if (scene === app.proteinScene) $("surface-status").textContent = ''; } catch (error) { $("surface-status").textContent = error.message; } };
     $("molecule-surface").addEventListener('change',surface); $("surface-opacity").addEventListener('change',surface);
     action('selection-focus',scene => scene.focus());
@@ -1822,7 +1824,7 @@
     action('selection-label',scene => scene.labelSelection());
     action('selection-distance',scene => { $("selection-message").textContent = `${scene.distance().toFixed(2)} Å`; });
     action('selection-save',scene => { localStorage.setItem(selectionViewKey(),JSON.stringify(scene.save())); toast(t("视图已保存在此浏览器")); });
-    action('selection-restore',scene => { scene.restore(JSON.parse(localStorage.getItem(selectionViewKey()) || 'null')); $("molecule-style").value = scene.style; });
+    action('selection-restore',scene => { scene.restore(JSON.parse(localStorage.getItem(selectionViewKey()) || 'null')); syncProteinControls(); });
     action('selection-image',scene => { scene.viewer.render(); const link = document.createElement('a'); link.href = scene.viewer.pngURI(); link.download = 'DrugStudio-structure.png'; link.click(); });
     action('selection-chat',scene => {
       const residues = [...new Set(scene.selected().map(a => `${a.chain || '∅'}:${a.resi}${a.icode || ''}`))];
@@ -1853,56 +1855,34 @@
     return values.map(residueSelection).filter(Boolean);
   }
 
+  function syncProteinControls() {
+    const scene = app.proteinScene;
+    if (!scene) return;
+    app.proteinStyle = scene.siteMode ? 'site' : scene.style;
+    $("molecule-style").value = scene.style;
+    document.querySelectorAll('[data-protein-style]').forEach(button => {
+      const active = button.dataset.proteinStyle === app.proteinStyle;
+      button.classList.toggle('active', active); button.setAttribute('aria-pressed',String(active));
+    });
+  }
+
   function setProteinStyle(style) {
-    if (!app.proteinViewer) return;
-    const protein = { model: 0 };
-    const siteSelections = style === "site" ? siteResidueSelections() : [];
-    if (style === "site" && !siteSelections.length) {
-      toast(t("当前没有预测口袋或参考结合位点残基可显示。"), true);
-      return;
+    const scene = app.proteinScene;
+    if (!scene) return;
+    if (style === 'site') {
+      const selections = siteResidueSelections();
+      const atoms = scene.atoms().filter(atom => selections.some(sel =>
+        atom.model === 0 && atom.chain === sel.chain && atom.resi === sel.resi && atom.icode === sel.icode));
+      if (!atoms.length) { toast(t("当前结构未找到位点残基，请检查结构和残基编号。"),true); return; }
+      scene.style = 'cartoon'; scene.siteMode = true;
+      scene.setSelection(new Set(atoms.map(DrugStudioMolecule.atomKey)));
+      const found = new Set(atoms.map(DrugStudioMolecule.residueKey)).size;
+      if (found < selections.length) toast(t("部分位点残基未找到坐标：{p0}/{p1}",{p0:found,p1:selections.length}),true);
+    } else {
+      scene.style = 'cartoon'; scene.siteMode = false; scene.overlays = []; scene.setSelection(new Set()); fitProteinView();
     }
-    try {
-      if (app.pocketShape) { app.proteinViewer.removeShape(app.pocketShape); app.pocketShape = null; }
-      updatePocketLabel(app.selectedPocket);
-      app.proteinViewer.setStyle(protein, {});
-      if (style === "site") {
-        app.proteinViewer.setStyle(protein, { cartoon: { color: "#b8c1c5", opacity: 0.22 } });
-        siteSelections.forEach((selection) => {
-          app.proteinViewer.setStyle(selection, {
-            cartoon: { color: "#e78e3b" },
-            stick: { radius: 0.24, colorscheme: "Jmol" },
-            sphere: { scale: 0.32, colorscheme: "Jmol" }
-          });
-        });
-        if (app.selectedPocket) {
-          const center = app.selectedPocket.box?.center || app.selectedPocket.center;
-          if (center?.length === 3) {
-            app.pocketShape = app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.2, color: "#f2b562", alpha: 0.35 } });
-          }
-        }
-        const focus = siteSelections.length === 1 ? siteSelections[0] : { or: siteSelections };
-        try { app.proteinViewer.zoomTo(focus); }
-        catch (_) { app.proteinViewer.zoomTo(); }
-        $("viewer-hint").textContent = app.selectedPocket ? `${t("预测口袋")} · ${siteSelections.length} ${t("个残基")}` : `${t("参考位点")} · ${siteSelections.length} ${t("个残基")}`;
-      } else {
-        app.proteinViewer.setStyle(protein, { cartoon: { color: "spectrum" } });
-        $("viewer-hint").textContent = t("坐标序列 · 模型 1");
-        if (app.selectedPocket) showPocket(app.selectedPocket);
-      }
-      if (app.proteinScene && style === "cartoon") { app.proteinScene.style = $("molecule-style").value; app.proteinScene.paint(); }
-      app.proteinStyle = style;
-      drawDockingBox();
-      app.proteinViewer.render();
-      document.querySelectorAll("[data-protein-style]").forEach((button) => { button.classList.toggle("active", button.dataset.proteinStyle === style); button.setAttribute("aria-pressed", String(button.dataset.proteinStyle === style)); });
-    } catch (error) {
-      app.proteinViewer.removeAllSurfaces?.();
-      app.proteinViewer.setStyle(protein, { cartoon: { color: "spectrum" } });
-      app.proteinViewer.render();
-      app.proteinStyle = "cartoon";
-      document.querySelectorAll("[data-protein-style]").forEach((button) => { button.classList.toggle("active", button.dataset.proteinStyle === "cartoon"); button.setAttribute("aria-pressed", String(button.dataset.proteinStyle === "cartoon")); });
-      $("viewer-hint").textContent = t("坐标序列 · 模型 1");
-      toast(error.message || t("无法显示结合位点。"), true);
-    }
+    updatePocketLabel(scene.siteMode ? app.selectedPocket : null);
+    syncProteinControls(); drawDockingBox();
   }
 
   // ---- docking box -------------------------------------------------------
@@ -2064,21 +2044,6 @@
     drawDockingBox();
     if (visible) fitProteinView();
     renderBoxCoverage();
-  }
-
-  function showPocket(pocket) {
-    if (!app.proteinViewer || !pocket) return;
-    if (app.pocketShape) app.proteinViewer.removeShape(app.pocketShape);
-    updatePocketLabel(pocket);
-    const center = pocket.box?.center || pocket.center;
-    if (center?.length === 3) {
-      app.pocketShape = app.proteinViewer.addShape({ sphere: { center: { x: center[0], y: center[1], z: center[2] }, radius: 1.6, color: "#f2b562", alpha: .9 } });
-    }
-    const selections = (pocket.residue_ids || []).map(residueSelection).filter(Boolean);
-    selections.forEach((selection) => app.proteinViewer.setStyle(selection, { stick: { radius: .18, colorscheme: "Jmol" }, cartoon: { color: "#f2b562" } }));
-    // Pocket annotations do not remove other scene layers.
-    drawDockingBox();
-    app.proteinViewer.render();
   }
 
   function renderLigandChoices() {
@@ -2424,8 +2389,15 @@
       const source = button.hasAttribute('data-copy-code') ? button.closest('.chat-code').querySelector('code').textContent : button.closest('.chat-message')._source;
       try {
         await window.DrugStudioChat.copy(source);
-        button.textContent = t('已复制');
-        window.setTimeout(() => { if (button.isConnected) button.textContent = t(button.hasAttribute('data-copy-code') ? '复制代码' : '复制回复'); }, 1600);
+        const feedback = copied => {
+          const label = t(copied ? '已复制' : button.hasAttribute('data-copy-code') ? '复制代码' : '复制回复');
+          button.title = label; button.setAttribute('aria-label',label);
+          button.classList.toggle('copied',copied);
+          button.innerHTML = `<i data-lucide="${copied ? 'check' : 'copy'}"></i>`;
+          window.DrugStudioControls.icons();
+        };
+        feedback(true); window.clearTimeout(button._copyTimer);
+        button._copyTimer = window.setTimeout(() => { if (button.isConnected) feedback(false); },1600);
       } catch (error) { toast(error.message, true); }
     });
     $("new-chat").addEventListener("click", newChat);

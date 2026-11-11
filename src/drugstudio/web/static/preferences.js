@@ -3,6 +3,12 @@
   "use strict";
   const MESSAGES = {
   "en": {
+    "定位位点": "Locate site",
+    "点击序列中的残基以高亮并聚焦": "Select a residue in the sequence to highlight and focus it",
+    "当前结构未找到位点残基，请检查结构和残基编号。": "No site residues match this structure. Check the structure and residue numbering.",
+    "部分位点残基未找到坐标：{p0}/{p1}": "Only {p0}/{p1} site residues have matching coordinates",
+    "你的消息": "Your message",
+    "助手回复": "Assistant reply",
     "选择与显示": "Selection & display",
     "显示方式": "Representation",
     "表面": "Surface",

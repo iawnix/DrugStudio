@@ -8,6 +8,7 @@ CLI, so the same process lock, manifest persistence and stage semantics apply.
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import ipaddress
 import json
@@ -473,6 +474,38 @@ class WebApplication:
         except FileNotFoundError:
             return {}
 
+    @staticmethod
+    def _message_text(value) -> str:
+        """Flatten Responses API content blocks for the transcript.
+
+        OpenAI-compatible endpoints may return ``[{type: text, text: ...}]``
+        instead of a plain string. Keep tool and history messages readable and
+        migrate older stores that accidentally persisted Python's list repr.
+        """
+        original = value
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith(("[", "{")):
+                try:
+                    value = json.loads(candidate)
+                except json.JSONDecodeError:
+                    try:
+                        value = ast.literal_eval(candidate)
+                    except (ValueError, SyntaxError):
+                        return original
+            else:
+                return value
+        if isinstance(value, dict):
+            if value.get("type") in {"text", "output_text", "input_text"}:
+                return WebApplication._message_text(value.get("text", value.get("content", "")))
+            if "content" in value:
+                return WebApplication._message_text(value["content"])
+            return ""
+        if isinstance(value, (list, tuple)):
+            parts = [WebApplication._message_text(item) for item in value]
+            return "".join(part for part in parts if part)
+        return "" if value is None else str(value)
+
     def _write_chat_store(self, value: dict) -> None:
         self.chat_store.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.chat_store.with_name(f".{self.chat_store.name}.{uuid.uuid4().hex}.tmp")
@@ -487,7 +520,15 @@ class WebApplication:
         key = "." if project_root == self.workspace_root else project_root.relative_to(self.workspace_root).as_posix()
         with self._chat_lock:
             rows = self._read_chat_store().get(key, [])
-        return {"project_id": key, "chats": sorted(rows, key=lambda item: item.get("updated_at", ""), reverse=True)}
+        chats = []
+        for row in rows:
+            item = dict(row)
+            item["messages"] = [
+                {**message, "content": self._message_text(message.get("content", ""))}
+                for message in item.get("messages", []) if isinstance(message, dict)
+            ]
+            chats.append(item)
+        return {"project_id": key, "chats": sorted(chats, key=lambda item: item.get("updated_at", ""), reverse=True)}
 
     def create_chat(self, project_id: str = "") -> dict:
         project_root = self._project_for_id(project_id)
@@ -508,7 +549,7 @@ class WebApplication:
         for item in messages[-100:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
                 continue
-            message = {"role": item["role"], "content": str(item.get("content") or "")[:20_000]}
+            message = {"role": item["role"], "content": self._message_text(item.get("content"))[:20_000]}
             if isinstance(item.get("actions"), list):
                 message["actions"] = item["actions"][:20]
             clean.append(message)
@@ -900,7 +941,7 @@ class WebApplication:
         for item in (history or [])[-24:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
                 continue
-            content = str(item.get("content") or "")[:20_000]
+            content = self._message_text(item.get("content"))[:20_000]
             messages.append(HumanMessage(content=content) if item["role"] == "user"
                             else AIMessage(content=content))
         return messages
@@ -915,7 +956,7 @@ class WebApplication:
                 messages.append(response)
                 calls = list(getattr(response, "tool_calls", []) or [])
                 if not calls:
-                    return {"reply": str(response.content), "actions": actions}
+                    return {"reply": self._message_text(response.content), "actions": actions}
             else:
                 calls, pending_calls = pending_calls, None
             while calls:

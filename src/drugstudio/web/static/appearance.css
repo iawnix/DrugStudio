@@ -324,3 +324,34 @@ button:disabled, input:disabled, select:disabled, textarea:disabled {
 .model-settings-dialog { border-radius: 16px; }
 .pocket-card, .review-pocket-card, .quality-card, .explanation-strip { border-radius: var(--radius-control); }
 ::selection { color: var(--ink); background: var(--selection); }
+
+/* Desktop sidebars are adjustable without taking the conversation out of the
+   grid. The handles stay narrow and only become visible on hover/focus. */
+@media (min-width: 761px) {
+  :root { --left-sidebar-width: 248px; --right-sidebar-width: 74px; }
+  .layout {
+    --left-sidebar-width: 248px;
+    --right-sidebar-width: 74px;
+    grid-template-columns: var(--left-sidebar-width) 6px minmax(0, 1fr) 6px var(--right-sidebar-width);
+  }
+  .sidebar-resizer {
+    position: relative; z-index: 35; width: 6px; min-width: 6px;
+    cursor: col-resize; touch-action: none; background: transparent;
+  }
+  .sidebar-resizer::after {
+    content: ""; position: absolute; inset: 0 2px; background: transparent;
+    transition: background-color .15s ease;
+  }
+  .sidebar-resizer:hover::after, .sidebar-resizer:focus-visible::after,
+  body.sidebar-resizing .sidebar-resizer::after { background: var(--blue); }
+  body.sidebar-resizing, body.sidebar-resizing * { cursor: col-resize !important; user-select: none !important; }
+  .main-content > .view:not(#view-project) { right: calc(var(--right-sidebar-width) + 12px); }
+  .context-backdrop { left: calc(var(--left-sidebar-width) + 6px); right: calc(var(--right-sidebar-width) + 6px); }
+}
+@media (min-width: 761px) and (max-width: 1120px) {
+  :root { --left-sidebar-width: 210px; --right-sidebar-width: 64px; }
+  .layout { --left-sidebar-width: 210px; --right-sidebar-width: 64px; }
+}
+@media (max-width: 760px) {
+  .sidebar-resizer { display: none; }
+}

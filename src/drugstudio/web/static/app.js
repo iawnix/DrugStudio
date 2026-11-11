@@ -1051,7 +1051,6 @@
       setEditorMode(data.path);
       requestAnimationFrame(() => app.codeEditor?.refresh());
       document.querySelectorAll(".file-entry").forEach((node) => node.classList.toggle("selected", node.dataset.filePath === path));
-      document.querySelector('[data-view="files"]')?.click();
     } catch (error) { toast(error.message, true); }
   }
 
@@ -1285,9 +1284,24 @@
     $("chat-status").classList.toggle("chat-status-offline", !ready);
   }
 
+  function messageText(value) {
+    if (Array.isArray(value)) return value.map(messageText).filter(Boolean).join("");
+    if (value && typeof value === "object") {
+      if (typeof value.text === "string") return value.text;
+      if (value.content !== undefined) return messageText(value.content);
+      return "";
+    }
+    if (typeof value !== "string") return value == null ? "" : String(value);
+    const trimmed = value.trim();
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try { return messageText(JSON.parse(trimmed)); } catch (_) { /* ordinary text */ }
+    }
+    return value;
+  }
+
   function renderChat() {
     const messages = app.chatHistory || [];
-    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? `<span class="chat-user-avatar">${esc(t("你"))}</span>` : `<span class="chat-avatar">DS</span>DrugStudio`}</div><div class="chat-content">${esc(item.content).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个研究问题开始"))}</h2><p>${esc(t("我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("解释当前工作流下一步需要什么"))}">${esc(t("解释下一步"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`;
+    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? `<span class="chat-user-avatar">${esc(t("你"))}</span>` : `<span class="chat-avatar">DS</span>DrugStudio`}</div><div class="chat-content">${esc(messageText(item.content)).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个研究问题开始"))}</h2><p>${esc(t("我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("解释当前工作流下一步需要什么"))}">${esc(t("解释下一步"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`;
     $("chat-messages").insertAdjacentHTML("beforeend", pendingActionCard());
     if (app.chatBusy) $("chat-messages").insertAdjacentHTML("beforeend", `<div class="chat-typing" aria-live="polite"><span class="chat-avatar">DS</span><span class="typing-dots"><i></i><i></i><i></i></span><span>${esc(t("正在思考"))}</span></div>`);
     $("approve-action")?.addEventListener("click", () => decideChatAction(true));
@@ -2051,7 +2065,56 @@
     }
   }
 
+  function initializeSidebarResize() {
+    const layout = document.querySelector(".layout");
+    if (!layout || layout.dataset.resizersReady) return;
+    layout.dataset.resizersReady = "1";
+    const storedLeft = Number(localStorage.getItem("drugstudio-left-sidebar-width"));
+    const storedRight = Number(localStorage.getItem("drugstudio-right-sidebar-width"));
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    const setWidth = (side, value) => {
+      const min = side === "left" ? 190 : 58;
+      const max = side === "left" ? 380 : Math.min(360, Math.max(180, window.innerWidth * .32));
+      const width = clamp(value, min, max);
+      const property = side === "left" ? "--left-sidebar-width" : "--right-sidebar-width";
+      layout.style.setProperty(property, `${width}px`);
+      document.documentElement.style.setProperty(property, `${width}px`);
+      localStorage.setItem(side === "left" ? "drugstudio-left-sidebar-width" : "drugstudio-right-sidebar-width", String(Math.round(width)));
+    };
+    if (Number.isFinite(storedLeft) && storedLeft > 0) setWidth("left", storedLeft);
+    if (Number.isFinite(storedRight) && storedRight > 0) setWidth("right", storedRight);
+    let drag = null;
+    const finish = () => {
+      if (!drag) return;
+      drag = null; document.body.classList.remove("sidebar-resizing");
+    };
+    document.querySelectorAll("[data-sidebar-resizer]").forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => {
+        if (window.matchMedia("(max-width: 760px)").matches) return;
+        handle.setPointerCapture?.(event.pointerId);
+        drag = { side: handle.dataset.sidebarResizer, startX: event.clientX,
+          startWidth: parseFloat(getComputedStyle(layout).getPropertyValue(handle.dataset.sidebarResizer === "left" ? "--left-sidebar-width" : "--right-sidebar-width")) || (handle.dataset.sidebarResizer === "left" ? 248 : 74) };
+        document.body.classList.add("sidebar-resizing"); event.preventDefault();
+      });
+      handle.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        const direction = event.key === "ArrowRight" ? 1 : -1;
+        const side = handle.dataset.sidebarResizer;
+        setWidth(side, (parseFloat(getComputedStyle(layout).getPropertyValue(side === "left" ? "--left-sidebar-width" : "--right-sidebar-width")) || (side === "left" ? 248 : 74)) + direction * 12);
+        event.preventDefault();
+      });
+    });
+    window.addEventListener("pointermove", (event) => {
+      if (!drag) return;
+      const delta = event.clientX - drag.startX;
+      setWidth(drag.side, drag.startWidth + (drag.side === "left" ? delta : -delta));
+    });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
+    initializeSidebarResize();
     window.DrugStudioUI.initialize();
     window.addEventListener("drugstudio:locale", refreshLanguage);
     window.addEventListener("drugstudio:theme", refreshAppearance);

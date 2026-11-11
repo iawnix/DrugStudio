@@ -817,3 +817,63 @@ html, body { background: var(--bg); color: var(--ink); }
 .pending-reason { display: block; color: var(--muted); font: 10px var(--mono); }
 .pending-reason .input-control { margin-top: 5px; }
 .pending-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* Chat-first interaction layer. Keep the scientific workspace available on
+   demand, while the conversation gets the calm, focused surface users expect
+   from a modern assistant. */
+#view-project.active { background: var(--bg); }
+#view-project .conversation-header { width: min(100%, 980px); margin: 0 auto; }
+#view-project .conversation-heading h1 { font-size: 16px; letter-spacing: -.01em; }
+#view-project .conversation-run-context { gap: 7px; }
+#view-project .workspace-run-select { width: 220px; min-width: 0; padding: 6px 8px; }
+#view-project .run-state-pill { min-width: 0; padding: 5px 7px; }
+#view-project .conversation-workflow { width: min(100%, 980px); margin: 0 auto 5px; border: 1px solid var(--line); border-radius: 8px; background: rgba(21,26,33,.72); }
+#view-project .conversation-workflow > summary { min-height: 38px; padding: 7px 11px; }
+#view-project .conversation-workflow .workflow-summary-copy strong { font-size: 11px; }
+#view-project .conversation-workflow .workflow-summary-copy small { font-size: 9px; }
+#view-project #workflow-model, #view-project #workflow-elapsed { display: none; }
+#view-project .conversation-layout { width: min(100%, 980px); margin: 0 auto; }
+#view-project .chat-messages { width: min(100%, 820px); padding: 25px 8px 24px; gap: 22px; }
+#view-project .chat-message { padding: 0 0 5px; }
+#view-project .chat-message.user { width: fit-content; max-width: min(78%, 680px); margin-left: auto; padding: 11px 14px; border: 1px solid #304158; border-radius: 15px 15px 4px 15px; background: #1d2a3b; }
+#view-project .chat-message.assistant { padding: 0 0 18px; border-bottom: 1px solid rgba(35,42,52,.72); }
+#view-project .chat-role { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: var(--muted); font-size: 10px; text-transform: none; }
+#view-project .chat-message.user .chat-role { justify-content: flex-end; margin-bottom: 5px; }
+#view-project .chat-avatar, #view-project .chat-user-avatar { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; color: #0e1116; background: var(--teal); font: 700 8px var(--mono); letter-spacing: .02em; }
+#view-project .chat-user-avatar { color: var(--ink); background: #334155; border-radius: 50%; }
+#view-project .chat-content { max-width: 760px; color: var(--ink); font-size: 13px; line-height: 1.75; }
+#view-project .chat-message.user .chat-content { color: #e8edf0; line-height: 1.6; }
+#view-project .chat-form { width: min(100%, 820px); margin-bottom: 12px; }
+#view-project .chat-composer-shell { border: 1px solid #344153; border-radius: 16px; background: #151a21; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+#view-project .chat-form textarea { min-height: 52px; max-height: 180px; padding: 15px 17px 4px; color: var(--ink); font-size: 13px; resize: none; }
+#view-project .chat-form textarea::placeholder { color: #657184; }
+#view-project .chat-form-footer { min-height: 43px; align-items: center; padding: 3px 8px 8px 11px; }
+#view-project .chat-model-settings { align-items: center; gap: 6px; }
+#view-project .chat-model-settings label:first-child { display: flex; align-items: center; gap: 5px; color: #718096; font: 9px var(--mono); }
+#view-project .chat-model-settings label:first-child input { width: 145px; padding: 5px 7px; border-color: transparent; background: transparent; color: #aeb9c8; font: 10px var(--mono); }
+#view-project .chat-model-settings label:nth-child(2) { display: none; }
+#view-project .model-settings-button { width: 29px; height: 29px; border-color: transparent; background: transparent; }
+#view-project #chat-status { margin-left: auto; padding-right: 8px; }
+#view-project #send-chat { width: 33px; height: 33px; min-width: 33px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: var(--blue); }
+#view-project #send-chat span { display: none; }
+#view-project #send-chat svg { width: 15px; height: 15px; }
+#view-project .chat-welcome { display: grid; justify-items: center; align-content: center; gap: 10px; min-height: 330px; padding: 20px; text-align: center; }
+#view-project .chat-welcome-mark { display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid rgba(45,212,191,.35); border-radius: 14px; color: var(--teal); background: rgba(45,212,191,.09); }
+#view-project .chat-welcome-mark svg { width: 21px; }
+#view-project .chat-welcome h2 { margin: 3px 0 0; color: var(--ink); font-size: 18px; font-weight: 600; }
+#view-project .chat-welcome p { max-width: 480px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+#view-project .chat-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; margin-top: 7px; }
+#view-project .chat-suggestions button { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; color: #aeb9c8; background: #151a21; font-size: 10px; }
+#view-project .chat-suggestions button:hover { border-color: var(--blue); color: var(--ink); background: #1a2432; }
+.tool-sidebar { width: 56px; padding-left: 5px; padding-right: 5px; }
+.tool-sidebar .section-label, .tool-sidebar .tool-nav-item span { display: none; }
+.tool-sidebar .tool-nav-item { min-height: 44px; }
+@media (max-width: 760px) {
+  #view-project .conversation-header { align-items: flex-start; }
+  #view-project .workspace-run-select { width: 145px; }
+  #view-project .chat-message.user { max-width: 90%; }
+  #view-project .chat-model-settings label:first-child { display: none; }
+  #view-project #chat-status { font-size: 9px; }
+  .tool-sidebar { width: auto; }
+  .tool-sidebar .tool-nav-item span { display: block; }
+}

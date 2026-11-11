@@ -1199,10 +1199,15 @@
 
   function renderChat() {
     const messages = app.chatHistory || [];
-    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? "你" : "DrugStudio"}</div><div class="chat-content">${esc(item.content).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-empty"><i data-lucide="messages-square"></i><span>从当前项目开始新对话</span></div>`;
+    $("chat-messages").innerHTML = messages.length ? messages.map((item) => `<article class="chat-message ${item.role === "user" ? "user" : "assistant"}"><div class="chat-role">${item.role === "user" ? `<span class="chat-user-avatar">你</span>` : `<span class="chat-avatar">DS</span>DrugStudio`}</div><div class="chat-content">${esc(item.content).replaceAll("\n", "<br>")}</div>${item.actions?.length ? `<div class="chat-actions">${item.actions.map((action) => `<span><i data-lucide="${action.tool === "run_command" ? "terminal" : "file"}"></i>${esc(action.tool)}${action.path ? ` · ${esc(action.path)}` : ""}</span>`).join("")}</div>` : ""}</article>`).join("") : `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>从一个研究问题开始</h2><p>我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="检查当前项目的结构和配体输入">检查当前项目的输入</button><button type="button" data-chat-suggestion="解释当前工作流下一步需要什么">解释下一步</button><button type="button" data-chat-suggestion="查看当前项目有哪些结果和风险">查看结果与风险</button></div></div>`;
     $("chat-messages").insertAdjacentHTML("beforeend", pendingActionCard());
     $("approve-action")?.addEventListener("click", () => decideChatAction(true));
     $("reject-action")?.addEventListener("click", () => decideChatAction(false));
+    $("chat-messages").querySelectorAll("[data-chat-suggestion]").forEach((button) => button.addEventListener("click", () => {
+      $("chat-input").value = button.dataset.chatSuggestion || "";
+      resizeChatInput();
+      $("chat-input").focus();
+    }));
     if (window.lucide) window.lucide.createIcons();
     $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
     const current = app.chatSessions.find((item) => item.chat_id === app.chatId);
@@ -1295,6 +1300,13 @@
       try { await persistChat(); } catch (error) { toast(error.message, true); }
     }
     if (app.projectId === projectId) { app.chatHistory = history; renderChat(); }
+  }
+
+  function resizeChatInput() {
+    const input = $("chat-input");
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(Math.max(input.scrollHeight, 52), 180)}px`;
   }
 
   async function selectRun(runKey) {
@@ -1975,7 +1987,8 @@
     });
     $("auth-form").addEventListener("submit", async (event) => { event.preventDefault(); const token = $("auth-token").value; const ok = await authenticate(token); if (ok) { $("auth-error").textContent = ""; initializeWorkspace(); } else { $("auth-error").textContent = t("访问令牌与本服务器不匹配。"); } });
     $("file-editor").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); saveProjectFile(); } });
-    $("chat-input").addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); $("chat-form").requestSubmit(); } });
+    $("chat-input").addEventListener("input", resizeChatInput);
+    $("chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("chat-form").requestSubmit(); } });
     document.querySelectorAll("[data-protein-style]").forEach((button) => button.addEventListener("click", () => setProteinStyle(button.dataset.proteinStyle)));
     $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });
     $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact; disposeViewers(); app.structureArtifact = picked; await loadProtein(); });

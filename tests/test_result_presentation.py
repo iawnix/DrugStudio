@@ -67,3 +67,12 @@ class ResultPresentationTests(unittest.TestCase):
         data = presentation(self.root,self.manifest,{'tasks':[{'task_id':'t','status':'complete','score':-9}]})
         self.assertEqual(data['tasks'],[])
         self.assertTrue(data['stale'])
+
+    def test_engine_version_comes_from_recorded_environment(self):
+        path = self.root/'t/result.json'
+        record = json.loads(path.read_text())
+        record['environment'] = {'reported_version': 'AutoDock Vina v1.2.7'}
+        path.write_text(json.dumps(record))
+        row = presentation(self.root,self.manifest)['tasks'][0]
+        self.assertEqual(row['engine_version'], 'AutoDock Vina v1.2.7')
+        self.assertIn('AutoDock Vina v1.2.7', row['group'])

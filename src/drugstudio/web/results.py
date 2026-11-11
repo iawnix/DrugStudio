@@ -84,9 +84,11 @@ def presentation(root: Path, manifest: dict, report: dict | None = None) -> dict
         protocol = {k: data.get(k, metadata.get(k)) for k in
                     ('center', 'size', 'seed', 'exhaustiveness', 'num_modes', 'min_rmsd', 'energy_range')}
         engine = data.get('engine') or task.get('engine') or 'unknown'
-        group = json.dumps([attempt, engine, data.get('engine_version'), receptor_input and receptor_input['artifact_id'],
+        environment = data.get('environment') or {}
+        engine_version = data.get('engine_version') or environment.get('reported_version') or environment.get('package_version')
+        group = json.dumps([attempt, engine, engine_version, receptor_input and receptor_input['artifact_id'],
                             task.get('receptor_id'), protocol], sort_keys=True)
-        rows.append({'task_id': tid, 'status': status(data.get('status')), 'engine': engine,
+        rows.append({'task_id': tid, 'status': status(data.get('status')), 'engine': engine, 'engine_version': engine_version,
                      'ligand_id': data.get('ligand_id'), 'state_id': data.get('state_id') or data.get('ligand_state_id'),
                      'receptor_id': data.get('receptor_id'), 'attempt': attempt, 'protocol': protocol,
                      'score': score, 'best_pose': best, 'poses': poses,

@@ -141,7 +141,18 @@ html { scrollbar-color: var(--dim) transparent; }
 button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 .theme-picker { display: flex; align-items: center; gap: 5px; color: var(--muted); border: 1px solid var(--line); border-radius: 20px; padding: 0 10px; height: 34px; background: var(--surface); }
 .theme-picker svg { width: 16px; height: 16px; }
-.theme-picker select { max-width: 115px; padding: 0; border: 0; color: var(--ink); background: transparent; font-size: 11px; cursor: pointer; }
+.theme-picker select {
+  max-width: 115px; padding: 0; border: 0; color: var(--ink);
+  background: var(--surface); color-scheme: inherit; font-size: 11px; cursor: pointer;
+}
+/* Chromium and Firefox build the native popup from the option colors. The
+   select itself can be transparent, but the popup must use the active theme. */
+select option, select optgroup {
+  color: var(--ink); background-color: var(--surface);
+}
+html[data-theme="dark"] select option, html[data-theme="dark"] select optgroup {
+  color: var(--ink); background-color: var(--surface);
+}
 .topbar .icon-button { border-color: transparent; border-radius: 50%; }
 .sidebar .select-control { padding: 10px; }
 .chat-filter-toggle { border-color: var(--line); background: var(--surface-2); border-radius: 20px; }

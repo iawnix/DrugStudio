@@ -1943,7 +1943,12 @@
     const activeTool = viewName === "workflow" ? "project" : viewName;
     document.body.classList.toggle("drawer-open", viewName !== "project");
     document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === activeTool));
-    document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === `view-${viewName}`));
+    // The conversation remains mounted and visible underneath tool drawers.
+    // Scientific views are contextual inspectors, not alternate destinations;
+    // closing one should return to the exact transcript position.
+    document.querySelectorAll(".view").forEach((view) => {
+      view.classList.toggle("active", view.id === "view-project" || view.id === `view-${viewName}`);
+    });
     if (viewName === "structure") {
       if (app.proteinViewer) window.setTimeout(() => app.proteinViewer.resize(), 40); else loadProtein();
     } else if (viewName === "ligand") {
@@ -1958,7 +1963,19 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll(".view:not(#view-project) .view-header").forEach((header) => {
+      if (header.querySelector("[data-close-drawer]")) return;
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "icon-button drawer-close";
+      close.dataset.closeDrawer = "true";
+      close.title = "关闭工具面板";
+      close.setAttribute("aria-label", "关闭工具面板");
+      close.innerHTML = '<i data-lucide="x"></i>';
+      header.appendChild(close);
+    });
     document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
+    document.querySelectorAll("[data-close-drawer]").forEach((button) => button.addEventListener("click", () => showView("project")));
     document.querySelectorAll("[data-open-view]").forEach((button) => button.addEventListener("click", () => {
       document.querySelector(`[data-view="${button.dataset.openView}"]`)?.click();
     }));

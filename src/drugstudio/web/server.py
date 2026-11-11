@@ -340,7 +340,21 @@ class WebApplication:
     def host_allowed(self, host_header: str) -> bool:
         if not self.allowed_hosts:
             return True
-        return (host_header or "").strip().lower() in self.allowed_hosts
+        host = (host_header or "").strip().lower()
+        if host in self.allowed_hosts:
+            return True
+        # A local reverse proxy (including the desktop browser bridge) often
+        # assigns a different localhost port on every session. The service is
+        # still bound to loopback, so accepting the loopback hostname with a
+        # forwarded port does not expose it to an external Host header.
+        if host.startswith("[") and "]" in host:
+            hostname = host[:host.index("]") + 1]
+        else:
+            hostname = host.rsplit(":", 1)[0] if ":" in host else host
+        return hostname in {"localhost", "127.0.0.1", "[::1]"} and any(
+            allowed == hostname or allowed.startswith(f"{hostname}:")
+            for allowed in self.allowed_hosts
+        )
 
     def open_session(self) -> str:
         session_id = secrets.token_urlsafe(32)

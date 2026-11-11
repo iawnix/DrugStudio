@@ -254,9 +254,12 @@
     }
   }
 
-  function renderModuleConfig() {
+  function renderModuleConfig({ preserveDraft = true } = {}) {
     const config = app.moduleConfig;
     if (!config) return;
+    const drafts = preserveDraft ? [...document.querySelectorAll('[data-module-key]')]
+      .filter(input => input.type === 'checkbox' ? input.checked !== input.defaultChecked : input.value !== input.defaultValue)
+      .map(input => [input.dataset.moduleKey, input.value, input.checked]) : [];
     const checks = config.checks || {};
     const groups = config.groups || {};
     const values = config.values || {};
@@ -274,6 +277,10 @@
       return `<section class="panel module-settings-group"><div class="panel-heading"><div><div class="eyebrow">${t("模块")}</div><h2>${esc(t(group.label || name))}</h2></div><span class="mono muted">${(group.keys || []).length} ${esc(t("项"))}</span></div><div class="module-settings-fields">${fields}</div></section>`;
     }).join("");
     $("module-settings-groups").innerHTML = groupHtml || `<div class="empty-state">${esc(t("没有可配置模块。"))}</div>`;
+    drafts.forEach(([key, value, checked]) => {
+      const input = document.querySelector(`[data-module-key="${key}"]`);
+      if (input) { input.value = value; input.checked = checked; }
+    });
     const allChecks = Object.values(checks);
     const healthy = allChecks.length > 0 && allChecks.every((item) => item.ok);
     $("module-config-dot").classList.toggle("offline", !healthy);
@@ -292,7 +299,7 @@
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.moduleConfig = data;
-      renderModuleConfig();
+      renderModuleConfig({ preserveDraft: false });
       toast(t("模块设置已保存；新运行将使用最新配置"));
     } catch (error) { toast(error.message, true); }
     finally { button.disabled = false; }

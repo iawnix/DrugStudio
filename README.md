@@ -230,8 +230,13 @@ python -m playwright install chromium
 npm install --prefix .runtime/viewer --no-save 3dmol@2.5.5
 DRUGSTUDIO_REQUIRE_UI_TESTS=1 \
 DRUGSTUDIO_TEST_3DMOL=.runtime/viewer/node_modules/3dmol/build/3Dmol-min.js \
-  python -m unittest discover -s tests -p test_review_ui.py -v
+  python -m unittest discover -s tests -p 'test_*ui.py' -v
 ```
+
+This is the same browser suite required by CI, including theme, locale, and
+parameter interactions. Run it before publishing UI changes: a general test
+run can skip browser coverage when Playwright is absent. Keep
+`DRUGSTUDIO_REQUIRE_UI_TESTS=1` so missing browser prerequisites fail explicitly.
 
 ```bash
 python -m unittest discover -s tests -v

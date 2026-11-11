@@ -28,7 +28,7 @@ try:
 except ImportError:
     sync_playwright = None
 
-CHROME = next((path for path in ("/usr/bin/google-chrome", "/usr/bin/chromium",
+CHROME = os.environ.get("DRUGSTUDIO_TEST_CHROME") or next((path for path in ("/usr/bin/google-chrome", "/usr/bin/chromium",
                                  "/usr/bin/chromium-browser")
                if os.path.exists(path)), None)
 IGNORABLE_CONSOLE = ("favicon", "Failed to load resource", "ERR_TUNNEL_CONNECTION_FAILED",

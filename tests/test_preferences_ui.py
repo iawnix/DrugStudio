@@ -6,6 +6,37 @@ class PresentationPreferences(harness.BrowserHarness):
     def switch_language(self):
         self.page.click('#language-toggle')
 
+    def test_late_module_response_preserves_unsaved_fields(self):
+        # Deliver the startup GET after the user starts editing. A fast local
+        # response otherwise hides this race between defaults and form drafts.
+        self.page.add_init_script('''(() => {
+          const original = window.fetch;
+          window.fetch = async (...args) => {
+            const response = await original(...args);
+            if (!String(args[0]).includes('/api/module-config')) return response;
+            return new Promise(resolve => {
+              window.__releaseModuleConfig = () => resolve(response);
+              window.__moduleConfigHeld = true;
+            });
+          };
+        })();''')
+        self.page.reload(wait_until='domcontentloaded')
+        self.page.wait_for_function('window.__moduleConfigHeld')
+        self.page.click('[data-view="settings"]')
+        field = self.page.locator('[data-module-key="vina_binary"]')
+        checkbox = self.page.locator('[data-module-key="af3_terms_acknowledged"]')
+        field.fill('/tmp/unsaved-vina')
+        checkbox.check()
+        self.page.evaluate('''async () => {
+          window.__releaseModuleConfig();
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }''')
+        self.assertEqual(field.input_value(), '/tmp/unsaved-vina')
+        self.assertTrue(checkbox.is_checked())
+        self.switch_language()
+        self.assertEqual(field.input_value(), '/tmp/unsaved-vina')
+        self.assertTrue(checkbox.is_checked())
+
     def test_theme_persistence_and_system_changes(self):
         self.page.select_option('#theme-selector', 'system')
         self.page.emulate_media(color_scheme='dark')
@@ -93,9 +124,16 @@ class PresentationPreferences(harness.BrowserHarness):
     def test_theme_contrast_in_model_dialog_and_selected_file(self):
         # Regression: dark mode inherited a white URL field and white file
         # selection from the old light-only component rules.
+        filename = 'theme-preview.py'
+        (self.run_root.parent.parent / filename).write_text('print("preview")\n')
         self.page.click('[data-view="files"]')
-        self.page.locator('.file-entry').first.wait_for()
-        self.page.locator('.file-entry').first.evaluate("el => el.classList.add('selected')")
+        # Select through the real file-open path. Injecting a CSS class on a
+        # directory loses selection when the asynchronous listing refreshes.
+        entry = self.page.locator(f'.file-entry[data-file-path="{filename}"]')
+        entry.click()
+        selected = self.page.locator(f'.file-entry.selected[data-file-path="{filename}"]')
+        selected.wait_for()
+        self.assertEqual(self.page.inner_text('#editor-file-label'), filename)
         self.page.click('#view-files [data-close-drawer]')
         for theme in ('light', 'dark'):
             self.page.select_option('#theme-selector', theme)
@@ -103,8 +141,7 @@ class PresentationPreferences(harness.BrowserHarness):
             self.assert_readable('#model-base-url', theme)
             self.page.click('[data-close-model-settings]')
             self.page.click('[data-view="files"]')
-            self.page.locator('.file-entry').first.evaluate("el => el.classList.add('selected')")
-            self.page.locator('.file-entry.selected').first.hover()
+            selected.hover()
             self.assert_readable('.file-entry.selected', theme)
             self.page.click('#view-files [data-close-drawer]')
             self.page.locator('.chat-list-row').first.hover()

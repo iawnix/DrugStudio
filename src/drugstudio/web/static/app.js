@@ -1939,9 +1939,18 @@
       edges.push([at(a, 0, b), at(a, 1, b)]);
       edges.push([at(a, b, 0), at(a, b, 1)]);
     }));
-    const color = getComputedStyle(document.documentElement).getPropertyValue("--blue").trim();
+    const palette = getComputedStyle(document.documentElement);
+    // Keep the box visually distinct from the blue selection controls and the
+    // element-coloured molecular representation.  A translucent solid gives
+    // the volume context while the edges preserve the exact search boundary.
+    const color = palette.getPropertyValue("--amber").trim();
+    app.boxShapes.push(app.proteinViewer.addBox({
+      center: { x: box.center[0], y: box.center[1], z: box.center[2] },
+      dimensions: { w: box.size[0], h: box.size[1], d: box.size[2] },
+      color, alpha: .07
+    }));
     edges.forEach(([start, end]) => {
-      app.boxShapes.push(app.proteinViewer.addLine({ start, end, color, linewidth: 2 }));
+      app.boxShapes.push(app.proteinViewer.addLine({ start, end, color, linewidth: 3 }));
     });
     app.proteinViewer.render();
   }

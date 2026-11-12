@@ -309,7 +309,7 @@
     "继续": "Continue",
     "在下一个安全检查点暂停": "Pause at the next safe checkpoint",
     "在下一个安全检查点取消": "Cancel at the next safe checkpoint",
-    "显示或隐藏对接盒线框": "Show or hide the docking box",
+    "显示或隐藏对接盒": "Show or hide the docking box",
     "关闭工具面板": "Close tool panel",
     "无法连接到工作台": "Unable to connect to the workbench",
     "运行 AutoDock Vina 的封装脚本": "Wrapper script for AutoDock Vina",

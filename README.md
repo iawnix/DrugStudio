@@ -56,7 +56,9 @@ Configure the model in the environment or in the workbench settings:
 ```bash
 export OPENAI_API_KEY="..."
 export OPENAI_BASE_URL="https://api.openai.com/v1"  # optional compatible endpoint
-export DOCK_AGENT_MODEL="gpt-4.1-mini"              # optional
+export DOCK_AGENT_MODEL="gpt-4.1-mini"              # shared fallback (optional)
+export DOCK_AGENT_CHAT_MODEL="gpt-4.1-mini"        # optional chat override
+export DOCK_AGENT_WORKFLOW_MODEL="gpt-4.1-mini"    # optional execution-graph override
 export DOCK_AGENT_VINA_RUNNER="/path/to/autodock-vina/scripts/run_in_env.sh"
 export DOCK_AGENT_CHEMISTRY_RUNNER="/path/to/rdkit/scripts/run_in_env.sh"
 export DOCK_AGENT_XTB="/path/to/xtb"
@@ -134,13 +136,17 @@ server before it is shown as available. Settings are stored at
 workflow process starts; changing them does not alter a running job or any
 historical manifest.
 
-The model endpoint, model name, and API key are saved through **模型连接**
-to `<runs-root>/.workbench/model-connection.secret.json` (owner-only mode
-`0600`). Saved settings override environment defaults on restart, including
-an explicitly cleared key. Leaving the key field blank preserves the current
-key. The API never returns the key, and project file browsing excludes the
-private `.workbench` directory. The local terminal runs as the server user
-and retains access to local files. Keep this settings file out of version
+The API endpoint, key, and model roles are saved through **模型连接** to
+`<runs-root>/.workbench/model-connection.secret.json` (owner-only mode
+`0600`). The **对话模型** and **执行图模型** can be selected independently:
+the former handles the active conversation, while the latter is passed to a
+new scientific workflow process. They share the configured endpoint and key,
+but they do not share conversation state or an LLM session. A running process
+keeps the model captured at launch; changing settings affects later turns or
+new runs only. Saved settings override environment defaults on restart,
+including an explicitly cleared key. Leaving the key field blank preserves the
+current key. The API never returns the key, and project file browsing excludes
+the private `.workbench` directory. Keep this settings file out of version
 control; keys are never copied into module settings, manifests, or run logs.
 AlphaFold 3 terms acknowledgement is an explicit setting and is off by default; a GPU allocation and valid PBS commands are still required.
 The same configuration is available to integrations through `GET` and `POST`

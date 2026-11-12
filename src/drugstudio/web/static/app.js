@@ -213,7 +213,9 @@
       if (!response.ok) throw new Error(data.error || response.statusText);
       app.modelConfig = data;
       $("model-base-url").value = data.base_url || "";
-      if (!localStorage.getItem("dock-agent-chat-model")) $("chat-model").value = data.model || "gpt-4.1-mini";
+      if (!localStorage.getItem("dock-agent-chat-model")) $("chat-model").value = data.chat_model || data.model || "gpt-4.1-mini";
+      $("model-chat-name").value = data.chat_model || data.model || "gpt-4.1-mini";
+      $("model-workflow-name").value = data.workflow_model || data.model || "gpt-4.1-mini";
       setModelConfigStatus(data.api_key_configured, data.base_url);
     } catch (_) {
       setModelConfigStatus(Boolean(app.state?.chat_available), app.state?.model?.base_url || "");
@@ -321,7 +323,9 @@
     try {
       const response = await postJson("/api/model-config", {
           base_url: $("model-base-url").value.trim(),
-          model: $("chat-model").value.trim(),
+          model: $("model-workflow-name").value.trim() || $("model-chat-name").value.trim(),
+          chat_model: $("model-chat-name").value.trim(),
+          workflow_model: $("model-workflow-name").value.trim(),
           api_key: $("model-api-key").value,
           clear_api_key: $("clear-model-api-key").checked
       });
@@ -330,7 +334,10 @@
       app.modelConfig = data;
       $("model-api-key").value = "";
       $("clear-model-api-key").checked = false;
-      localStorage.setItem("dock-agent-chat-model", data.model);
+      localStorage.setItem("dock-agent-chat-model", data.chat_model || data.model);
+      $("chat-model").value = data.chat_model || data.model;
+      $("model-chat-name").value = data.chat_model || data.model;
+      $("model-workflow-name").value = data.workflow_model || data.model;
       if (app.state) app.state.chat_available = data.api_key_configured;
       setModelConfigStatus(data.api_key_configured, data.base_url);
       renderChatStatus();
@@ -426,7 +433,9 @@
     runPill.textContent = ({ succeeded: t("已完成"), failed: t("失败"), running: t("运行中"), paused: t("已暂停"), cancelled: t("已取消"), waiting_approval: t("等待审核"), waiting_input: t("等待输入"), waiting_execution: t("等待执行") })[state.status] || (state.run_id ? state.status || t("待运行") : t("无运行"));
     runPill.className = `run-state-pill ${state.status || "idle"}`;
     const modelInput = $("chat-model");
-    if (document.activeElement !== modelInput) modelInput.value = localStorage.getItem("dock-agent-chat-model") || app.modelConfig?.model || state.model?.model || "gpt-4.1-mini";
+    if (document.activeElement !== modelInput) modelInput.value = localStorage.getItem("dock-agent-chat-model") || app.modelConfig?.chat_model || app.modelConfig?.model || state.model?.model || "gpt-4.1-mini";
+    if ($("model-chat-name") && document.activeElement !== $("model-chat-name")) $("model-chat-name").value = app.modelConfig?.chat_model || app.modelConfig?.model || "gpt-4.1-mini";
+    if ($("model-workflow-name") && document.activeElement !== $("model-workflow-name")) $("model-workflow-name").value = app.modelConfig?.workflow_model || app.modelConfig?.model || "gpt-4.1-mini";
     const temperature = localStorage.getItem("dock-agent-chat-temperature") || "0.2";
     $("chat-temperature").value = temperature;
     $("chat-temperature-value").value = temperature;
@@ -2305,7 +2314,7 @@
   }
 
   async function continueWorkflow() {
-    try { const response = await postJson("/api/continue", { model: $("chat-model").value.trim(), conversation_id: app.chatId }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast(data.status === "already_running" ? t("工作流已在运行") : data.status === "already_complete" ? t("工作流已完成") : t("工作流已启动")); await fetchState(); } catch (error) { toast(error.message, true); }
+    try { const response = await postJson("/api/continue", { workflow_model: app.modelConfig?.workflow_model || $("model-workflow-name")?.value.trim() || app.modelConfig?.model, conversation_id: app.chatId }); const data = await response.json(); if (!response.ok) throw new Error(data.error); toast(data.status === "already_running" ? t("工作流已在运行") : data.status === "already_complete" ? t("工作流已完成") : t("工作流已启动")); await fetchState(); } catch (error) { toast(error.message, true); }
   }
 
   function toast(message, error = false) { const node = $("toast"); node.textContent = message; node.className = `toast show ${error ? "error" : ""}`; window.clearTimeout(node._timer); node._timer = window.setTimeout(() => node.classList.remove("show"), 3500); }

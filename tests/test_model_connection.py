@@ -58,6 +58,31 @@ class ModelConnectionTests(unittest.TestCase):
         with patch.dict(os.environ, {'OPENAI_API_KEY': ''}):
             self.assertEqual(self.make_app()._llm_config['api_key'], 'environment-key')
 
+    def test_chat_and_workflow_models_are_saved_independently(self):
+        public = self.app.update_model_config({
+            'base_url': 'https://saved.example/v1',
+            'model': 'workflow-model',
+            'chat_model': 'chat-model',
+            'workflow_model': 'workflow-model',
+            'api_key': 'test-private-key',
+        })
+        self.assertEqual(public['chat_model'], 'chat-model')
+        self.assertEqual(public['workflow_model'], 'workflow-model')
+        restarted = self.make_app()
+        self.assertEqual(restarted.model_config()['chat_model'], 'chat-model')
+        self.assertEqual(restarted.model_config()['workflow_model'], 'workflow-model')
+
+    def test_legacy_single_model_setting_migrates_to_both_roles(self):
+        self.app.model_config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.app.model_config_path.write_text(json.dumps({
+            'base_url': 'https://legacy.example/v1',
+            'model': 'legacy-model',
+            'api_key': 'legacy-key',
+        }), encoding='utf-8')
+        restarted = self.make_app()
+        self.assertEqual(restarted.model_config()['chat_model'], 'legacy-model')
+        self.assertEqual(restarted.model_config()['workflow_model'], 'legacy-model')
+
     def test_failed_write_does_not_replace_live_or_saved_config(self):
         self.app.update_model_config(self.settings)
         before = self.app.model_config_path.read_bytes()

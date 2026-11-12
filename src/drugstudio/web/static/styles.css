@@ -478,6 +478,9 @@ body.drawer-open .context-backdrop { display: block; }
 .model-settings-dialog { width: min(440px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); box-shadow: 0 22px 70px rgba(25,39,55,.22); }
 .model-settings-dialog::backdrop { background: rgba(23,32,40,.34); }
 .model-settings-dialog form { display: grid; gap: 16px; padding: 20px; }
+.model-role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.model-role-grid small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.35; }
+.model-role-grid .settings-field { gap: 4px; }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
 .dialog-heading h2 { margin: 4px 0 0; font-size: 17px; font-weight: 650; }
 .settings-field { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
@@ -562,6 +565,7 @@ body.drawer-open .context-backdrop { display: block; }
   .file-tree { padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--line); }
   .chat-model-settings { gap: 7px; }
   .chat-model-settings input[type="text"] { width: 120px; }
+  .model-role-grid { grid-template-columns: 1fr; }
   .chat-model-settings input[type="range"] { width: 90px; }
   .chat-model-settings input[type="text"] { width: 105px; }
   .chat-message.user { max-width: 94%; }

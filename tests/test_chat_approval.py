@@ -219,15 +219,24 @@ class ApprovalGate(ChatTestCase):
         self.assertEqual(outcome["reply"], "读到了")
 
     def test_approving_runs_the_command_and_resumes(self):
-        marker = self.project_root / "ran.txt"
-        outcome, _ = self.drive([self.call("run_command", {"command": f"touch {marker}"})])
+        outcome, _ = self.drive([self.call("run_command", {"command": "git status --short"})])
         action_id = outcome["pending"]["action_id"]
         # Resume: the model gets the tool result and answers.
-        self.app._chat_model = lambda payload, run_root, tools: ScriptedModel([AIMessage(content="已执行")])
-        resumed = self.app.resolve_chat_action({"action_id": action_id, "approved": True})
-        self.assertTrue(marker.exists(), "approval did not run the command")
+        with patch.object(self.app, "run_project_command", return_value={"cwd": "", "returncode": 0,
+                                                                            "stdout": "clean", "stderr": ""}) as command:
+            self.app._chat_model = lambda payload, run_root, tools: ScriptedModel([AIMessage(content="已执行")])
+            resumed = self.app.resolve_chat_action({"action_id": action_id, "approved": True})
+        command.assert_called_once()
         self.assertEqual(resumed["reply"], "已执行")
         self.assertTrue(resumed["decided"]["approved"])
+
+    def test_chat_cannot_write_or_run_inside_research_run(self):
+        actions = []
+        tools = {tool.name: tool for tool in self.app._chat_tools(self.project_root, actions, self.run_root)}
+        with self.assertRaisesRegex(ValueError, "research run directory"):
+            tools["write_file"].invoke({"path": "runs/r1/manifest.json", "content": "{}"})
+        with self.assertRaisesRegex(ValueError, "protected workflow files"):
+            tools["run_command"].invoke({"command": "cat manifest.json"})
 
     def test_rejecting_does_not_run_it_and_tells_the_model_why(self):
         marker = self.project_root / "ran.txt"

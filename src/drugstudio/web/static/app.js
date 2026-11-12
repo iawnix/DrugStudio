@@ -1487,11 +1487,15 @@
     const pending = app.pendingAction;
     if (!pending) return "";
     const isCommand = pending.tool === "run_command";
-    const detail = isCommand
+    const isWorkflow = pending.tool === "request_workflow_action";
+    const workflowLabels = { start: t("启动工作流"), pause: t("暂停工作流"), cancel: t("取消工作流"), rerun: t("阶段重跑") };
+    const detail = isWorkflow
+      ? `<div class="pending-meta">${esc(workflowLabels[pending.workflow_action] || t("工作流控制"))}${pending.workflow_stage ? ` · ${esc(pending.workflow_stage)}` : ""}</div>${pending.workflow_prompt ? `<pre class="pending-command">${esc(pending.workflow_prompt)}</pre>` : ""}`
+      : isCommand
       ? `<pre class="pending-command">${esc(pending.command)}</pre>${pending.cwd ? `<div class="pending-meta">${t("工作目录")}: ${esc(pending.cwd)}</div>` : ""}`
       : `<div class="pending-meta">${t("写入文件")}: <code>${esc(pending.path)}</code> · ${pending.content_bytes} ${t("字节")}</div>${pending.content_preview ? `<pre class="pending-command">${esc(pending.content_preview)}</pre>` : ""}`;
     return `<article class="pending-action" id="pending-action">
-      <div class="pending-heading"><i data-lucide="shield-alert"></i><strong>${t(isCommand ? t("AI 请求执行命令") : t("AI 请求写入文件"))}</strong></div>
+      <div class="pending-heading"><i data-lucide="shield-alert"></i><strong>${t(isWorkflow ? t("AI 请求控制工作流") : isCommand ? t("AI 请求执行命令") : t("AI 请求写入文件"))}</strong></div>
       ${detail}
       <label class="pending-reason">${t("理由（拒绝时会转达给 AI）")}<input id="pending-reason" class="input-control" type="text" placeholder="${t("可选")}"></label>
       <div class="pending-actions">

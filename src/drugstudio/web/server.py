@@ -980,6 +980,10 @@ class WebApplication:
     # workflow state directly.
     MUTATING_TOOLS = {"write_file", "run_command", "request_workflow_action"}
     TOOL_CALL_LIMIT = 8
+    CHAT_PROTECTED_NAMES = {
+        "manifest.json", "run-meta.json", "control.json", "events.jsonl",
+        ".run.lock", "model-connection.secret.json", "module-settings.json",
+    }
 
     def chat_context(self, run_root: Path | None) -> dict:
         """A compact, factual summary of the run for the assistant.
@@ -1056,6 +1060,45 @@ class WebApplication:
     def _chat_tools(self, project_root: Path, actions: list, run_root: Path | None = None):
         from langchain_core.tools import StructuredTool
 
+        def assert_chat_file_allowed(path: str) -> None:
+            candidate = self.project_file(path, allow_missing=True, root=project_root)
+            if run_root is not None:
+                try:
+                    candidate.relative_to(run_root.resolve())
+                except ValueError:
+                    pass
+                else:
+                    raise ValueError("chat tools cannot modify a research run directory; use workflow actions")
+            if candidate.name in self.CHAT_PROTECTED_NAMES or any(
+                    part in {".workbench", ".git"} for part in candidate.relative_to(project_root).parts):
+                raise ValueError("chat tools cannot modify protected workbench files")
+
+        def assert_chat_command_allowed(command: str, cwd: str) -> None:
+            text = str(command or "")
+            lowered = text.lower()
+            forbidden = (
+                "manifest.json", "run-meta.json", "control.json", "events.jsonl", ".run.lock",
+                "model-connection.secret.json", "module-settings.json", ".workbench",
+            )
+            if any(item in lowered for item in forbidden):
+                raise ValueError("chat commands cannot access protected workflow files")
+            if re.search(r"(?:^|[;&|])\s*(?:drugstudio|dock-agent)\s+(?:run|continue|rerun|pause|cancel)\b", lowered):
+                raise ValueError("use request_workflow_action for workflow lifecycle changes")
+            if re.search(r"(?:python(?:3(?:\.\d+)?)?|\bpython)\s+-m\s+drugstudio(?:\s|$)", lowered):
+                raise ValueError("use request_workflow_action instead of invoking the workflow CLI")
+            if re.search(r"\b(?:qsub|qdel|qrerun|kill|pkill|shutdown)\b", lowered):
+                raise ValueError("chat commands cannot control scheduler or server processes")
+            if re.search(r"(?:>>?|<<?)|\b(?:tee|touch|truncate|dd|rm|mv|cp|install)\b|sed\s+-i\b", lowered):
+                raise ValueError("chat commands are read-only; use an approved file or workflow action")
+            if run_root is not None and cwd:
+                candidate = self.project_file(cwd, allow_missing=False, root=project_root)
+                try:
+                    candidate.relative_to(run_root.resolve())
+                except ValueError:
+                    pass
+                else:
+                    raise ValueError("chat commands cannot run inside a research run directory")
+
         def list_files(path: str = "") -> str:
             """List files and directories at a project-relative path."""
             return json.dumps(self.list_project_files(path, root=project_root), ensure_ascii=False)
@@ -1066,12 +1109,14 @@ class WebApplication:
 
         def write_file(path: str, content: str) -> str:
             """Write a UTF-8 file inside the active project. Needs human approval."""
+            assert_chat_file_allowed(path)
             result = self.write_project_file(path, content, root=project_root)
             actions.append({"tool": "write_file", "path": result["path"]})
             return json.dumps(result, ensure_ascii=False)
 
         def run_command(command: str, cwd: str = "") -> str:
             """Run a shell command in the active project. Needs human approval."""
+            assert_chat_command_allowed(command, cwd)
             result = self.run_project_command(command, cwd, redact_environment=True, root=project_root)
             actions.append({"tool": "run_command", "command": command, "returncode": result["returncode"]})
             return json.dumps(result, ensure_ascii=False)
@@ -1120,7 +1165,8 @@ class WebApplication:
             "write_file, run_command and request_workflow_action stop and wait for the user to approve them, so state "
             "plainly what you intend to do and why before requesting one.\n"
             "Use request_workflow_action for workflow lifecycle changes. Do not use shell commands "
-            "to edit manifests, control files or bypass human review.\n"
+            "to edit files, invoke the workflow CLI, control scheduler processes, or bypass human review. "
+            "run_command is limited to read-only project inspection.\n"
             "Never expose credentials. Reply in the user's language, preferring Chinese when "
             "they write Chinese. Use Markdown for lists, tables and links, fenced blocks for "
             "code, and $...$ or $$...$$ delimiters for mathematical formulas."

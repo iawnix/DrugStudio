@@ -15,7 +15,9 @@ UI. The event records both the human approval and `chat_supervisor` as the
 requesting actor.
 
 The supervisor must not edit manifests, event logs, lock files, or control
-files through shell commands. Scientific stage agents do not receive project
+files through shell commands. Its approved `run_command` tool is limited to
+read-only project inspection; protected run files and workflow CLI commands
+are rejected by the server. Scientific stage agents do not receive project
 chat tools or lifecycle controls. They operate only through their stage
 contracts and persist outputs as artifacts. A running workflow keeps its model
 and parameters fixed; later model settings apply to new runs.

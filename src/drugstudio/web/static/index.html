@@ -41,7 +41,7 @@
       <aside class="sidebar">
         <div class="sidebar-section chat-navigation">
           <div class="chat-nav-heading"><div class="section-label">项目与会话</div><button class="icon-button" id="new-chat" title="新建对话" aria-label="新建对话"><i data-lucide="square-pen"></i></button></div>
-          <label class="workspace-select-label">项目<select id="project-selector" class="select-control workspace-project-select" aria-label="选择项目"><option>加载项目...</option></select></label>
+          <div class="project-picker-row"><label class="workspace-select-label">项目<select id="project-selector" class="select-control workspace-project-select" aria-label="选择项目"><option>加载项目...</option></select></label><button class="icon-button" id="manage-projects" type="button" title="管理项目" aria-label="管理项目"><i data-lucide="folder-cog"></i></button></div>
           <div class="chat-list-heading"><span>会话</span><div class="chat-filter-toggle"><button class="active" type="button" data-chat-filter="active">活跃</button><button type="button" data-chat-filter="archived">归档</button></div></div>
           <div id="chat-list" class="chat-list"></div>
         </div>
@@ -166,6 +166,13 @@ zoom site</pre><p>支持上述选择子、and/or/not、括号、within/byres。m
       <p class="muted">设置保存在本机服务器，重启后自动读取。已配置的密钥不会回显，留空保存会保留原密钥。</p>
       <label class="clear-key-option"><input id="clear-model-api-key" type="checkbox">清除已保存的 API Key</label>
       <div class="dialog-actions"><button class="secondary-button" type="button" data-close-model-settings>取消</button><button class="primary-button" type="submit" id="save-model-settings"><i data-lucide="save"></i>保存设置</button></div>
+    </form>
+  </dialog>
+  <dialog class="model-settings-dialog project-dialog" id="project-dialog">
+    <form id="project-form" method="dialog">
+      <div class="dialog-heading"><div><div class="eyebrow">项目管理</div><h2>项目与工作区</h2></div><button class="icon-button" type="button" data-close-project-dialog title="关闭" aria-label="关闭"><i data-lucide="x"></i></button></div>
+      <section class="project-create-section"><div class="section-label">新建项目</div><div class="project-form-grid"><label class="settings-field">项目名称<input id="new-project-name" class="input-control" required maxlength="120" placeholder="例如：KRAS-G12C 先导优化"></label><label class="settings-field">项目 ID<input id="new-project-id" class="input-control" maxlength="64" placeholder="自动生成"></label></div><label class="settings-field">描述<textarea id="new-project-description" class="input-control" rows="2" maxlength="1000" placeholder="可选：研究目标或项目备注"></textarea></label><button class="primary-button" type="submit" id="create-project"><i data-lucide="folder-plus"></i>创建项目</button></section>
+      <section class="project-management-section"><div class="section-label">已有项目</div><div id="project-management-list" class="project-management-list"></div></section>
     </form>
   </dialog>
   <div class="auth-overlay" id="auth-overlay" hidden><form class="auth-dialog" id="auth-form"><div class="eyebrow">工作区访问</div><h2>解锁工作台</h2><p>输入服务器启动时打印的访问令牌。</p><label for="auth-token">访问令牌</label><input id="auth-token" class="input-control" type="password" autocomplete="current-password" required><div class="auth-error" id="auth-error"></div><button class="primary-button" type="submit">继续</button></form></div>

@@ -407,6 +407,16 @@ body.drawer-open .context-backdrop { display: block; }
 .chat-nav-heading .section-label { margin: 0; }
 .chat-nav-heading .icon-button { width: 29px; height: 29px; }
 .chat-list-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 3px; color: var(--muted); font-size: 10px; }
+.project-picker-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: end; gap: 6px; }
+.project-picker-row .icon-button { width: 32px; height: 34px; }
+.project-dialog { width: min(620px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); overflow: auto; }
+.project-create-section, .project-management-section { display: grid; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--line); }
+.project-form-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(150px, .8fr); gap: 10px; }
+.project-dialog textarea { resize: vertical; }
+.project-management-list { display: grid; gap: 5px; max-height: 280px; overflow: auto; }
+.project-management-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.project-management-info { min-width: 0; display: grid; gap: 3px; }.project-management-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 11px; }.project-management-info small { color: var(--muted); font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.project-management-actions { display: flex; gap: 4px; }.project-management-actions .icon-button { width: 28px; height: 28px; }.project-management-row.archived { opacity: .68; }
+@media (max-width: 760px) { .project-form-grid { grid-template-columns: 1fr; } }
 .chat-filter-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); }
 .chat-filter-toggle button { min-height: 23px; padding: 3px 7px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; }
 .chat-filter-toggle button.active { background: var(--surface); color: var(--blue); box-shadow: 0 1px 3px rgba(30,45,60,.12); }

@@ -16,6 +16,7 @@ import math
 import mimetypes
 import os
 import pty
+import re
 import select
 import secrets
 import signal
@@ -51,6 +52,7 @@ from ..workbench import (
 STATIC_ROOT = Path(__file__).with_name("static")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WORKSPACE_ROOT = PROJECT_ROOT.parent
+PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 MODULE_SETTING_DEFAULTS = {
     "vina_runner": str(WORKSPACE_ROOT / "skill-development/autodock-vina/scripts/run_in_env.sh"),
@@ -230,15 +232,94 @@ class WebApplication:
         for path in sorted(self.workspace_root.iterdir(), key=lambda item: item.name.casefold()):
             if path.name.startswith(".") or not path.is_dir() or path.is_symlink():
                 continue
-            rows.append({"project_id": path.relative_to(self.workspace_root).as_posix(),
-                         "name": path.name, "selected": path.resolve() == selected})
+            project_id = path.relative_to(self.workspace_root).as_posix()
+            metadata = self._read_project_metadata(path)
+            rows.append({"project_id": project_id,
+                         "name": str(metadata.get("name") or path.name),
+                         "description": str(metadata.get("description") or ""),
+                         "archived": bool(metadata.get("archived_at")),
+                         "created_at": metadata.get("created_at"),
+                         "updated_at": metadata.get("updated_at"),
+                         "selected": path.resolve() == selected})
         if self.workspace_root.resolve() == selected:
             rows.insert(0, {"project_id": ".", "name": self.workspace_root.name, "selected": True})
         return rows
 
     def project_identity(self, project_root: Path | None = None) -> dict:
         root = project_root or self.default_project_root
-        return {"project_id": self.project_id_of(root), "name": root.name}
+        metadata = self._read_project_metadata(root)
+        return {"project_id": self.project_id_of(root),
+                "name": str(metadata.get("name") or root.name),
+                "description": str(metadata.get("description") or ""),
+                "archived": bool(metadata.get("archived_at"))}
+
+    @staticmethod
+    def _project_metadata_path(project_root: Path) -> Path:
+        return project_root / ".drugstudio" / "project.json"
+
+    def _read_project_metadata(self, project_root: Path) -> dict:
+        if project_root == self.workspace_root:
+            return {}
+        try:
+            value = json.loads(self._project_metadata_path(project_root).read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_project_metadata(self, project_root: Path, metadata: dict) -> dict:
+        path = self._project_metadata_path(project_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, metadata)
+        return metadata
+
+    def _validate_new_project_id(self, project_id: str) -> str:
+        value = str(project_id or "").strip()
+        if not PROJECT_ID_RE.fullmatch(value) or value in {".", ".."}:
+            raise ValueError("project_id must contain 1–64 letters, numbers, dots, underscores or hyphens")
+        return value
+
+    def create_project(self, name: str, project_id: str = "", description: str = "") -> dict:
+        display_name = str(name or "").strip()
+        if not display_name or len(display_name) > 120:
+            raise ValueError("project name must contain 1–120 characters")
+        candidate = project_id or re.sub(r"[^A-Za-z0-9._-]+", "-", display_name).strip("-._")
+        slug = self._validate_new_project_id(candidate or f"project-{uuid.uuid4().hex[:8]}")
+        root = (self.workspace_root / slug).resolve()
+        root.relative_to(self.workspace_root)
+        if root.exists():
+            raise ValueError(f"project already exists: {slug}")
+        root.mkdir(parents=True)
+        now = datetime.now(timezone.utc).isoformat()
+        self._write_project_metadata(root, {"project_id": slug, "name": display_name,
+                                            "description": str(description or "").strip()[:1000],
+                                            "created_at": now, "updated_at": now, "archived_at": None})
+        return self.project_identity(root) | {"created_at": now, "updated_at": now}
+
+    def manage_project(self, project_id: str, action: str, *, name: str = "",
+                       description: str = "") -> dict:
+        root = self._project_for_id(project_id)
+        if root == self.workspace_root:
+            raise ValueError("the workspace root cannot be managed as a project")
+        metadata = self._read_project_metadata(root)
+        if action == "archive" or action == "restore":
+            if any(self.workflow_running(path) for path in self.runs_root.rglob("manifest.json")
+                   if self.owning_project_id(path.parent, self.run_metadata(path.parent)) == project_id):
+                raise ValueError("cannot archive a project while a workflow is running")
+            now = datetime.now(timezone.utc).isoformat()
+            metadata.update({"project_id": project_id, "name": metadata.get("name") or root.name,
+                             "updated_at": now, "archived_at": now if action == "archive" else None})
+            self._write_project_metadata(root, metadata)
+            return self.project_identity(root) | {"updated_at": now}
+        if action == "update":
+            display_name = str(name or metadata.get("name") or root.name).strip()
+            if not display_name or len(display_name) > 120:
+                raise ValueError("project name must contain 1–120 characters")
+            now = datetime.now(timezone.utc).isoformat()
+            metadata.update({"project_id": project_id, "name": display_name,
+                             "description": str(description or "").strip()[:1000], "updated_at": now})
+            self._write_project_metadata(root, metadata)
+            return self.project_identity(root) | {"updated_at": now}
+        raise ValueError("unsupported project action")
 
     def ensure_run_metadata(self, run_root: Path, manifest: dict | None = None, **updates: object) -> dict:
         manifest = manifest or self.manifest(run_root)
@@ -637,7 +718,7 @@ class WebApplication:
         entries = []
         children = sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))
         for path in children[:500]:
-            if path.is_symlink() or path.resolve().is_relative_to(self.workbench_root.resolve()):
+            if path.is_symlink() or path.name == ".drugstudio" or path.resolve().is_relative_to(self.workbench_root.resolve()):
                 continue
             info = {"name": path.name, "path": path.relative_to(project_root).as_posix(),
                     "kind": "directory" if path.is_dir() else "file"}
@@ -1633,7 +1714,7 @@ class WebApplication:
         return json.loads(completed.stdout)
 
     def _reject_private_file(self, candidate: Path) -> None:
-        if candidate.is_relative_to(self.workbench_root.resolve()):
+        if candidate.is_relative_to(self.workbench_root.resolve()) or ".drugstudio" in candidate.parts:
             raise ValueError("workbench settings are private server files")
 
     def file_path(self, relative: str, run_root: Path | None = None) -> Path:
@@ -1780,6 +1861,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
             elif parsed.path == "/api/select-project":
                 self._json(self.app.select_project(str(payload.get("project_id") or "")))
+            elif parsed.path == "/api/projects":
+                self._json(self.app.create_project(str(payload.get("name") or ""),
+                                                   str(payload.get("project_id") or ""),
+                                                   str(payload.get("description") or "")),
+                           status=HTTPStatus.CREATED)
+            elif parsed.path == "/api/project/manage":
+                self._json(self.app.manage_project(
+                    str(payload.get("project_id") or ""),
+                    str(payload.get("action") or ""),
+                    name=str(payload.get("name") or ""),
+                    description=str(payload.get("description") or "")))
             elif parsed.path == "/api/model-config":
                 run_root = self._run_scope(payload, required=False)
                 self.app.update_model_config(payload)

@@ -193,6 +193,35 @@ class RunsAreListedPerProject(WorkbenchServerTestCase):
         self.assertTrue({item["project_id"] for item in every["runs"]} <= listed)
 
 
+class ProjectManagement(WorkbenchServerTestCase):
+    PORT = 8793
+
+    def test_create_project_adds_a_managed_directory(self):
+        status, project = self.post("/api/projects", {"name": "KRAS G12C", "project_id": "kras-g12c",
+                                                        "description": "lead optimization"})
+        self.assertEqual(status, 201)
+        self.assertEqual(project["project_id"], "kras-g12c")
+        self.assertTrue((self.root / "kras-g12c" / ".drugstudio" / "project.json").is_file())
+        _, projects = self.get("/api/projects")
+        self.assertEqual(next(item for item in projects["projects"] if item["project_id"] == "kras-g12c")["name"], "KRAS G12C")
+
+    def test_archive_and_restore_project(self):
+        self.post("/api/projects", {"name": "Temporary", "project_id": "temporary"})
+        status, archived = self.post("/api/project/manage", {"action": "archive", "project_id": "temporary"})
+        self.assertEqual((status, archived["archived"]), (200, True))
+        status, restored = self.post("/api/project/manage", {"action": "restore", "project_id": "temporary"})
+        self.assertEqual((status, restored["archived"]), (200, False))
+
+    def test_update_project_changes_display_name_without_changing_id(self):
+        self.post("/api/projects", {"name": "Original", "project_id": "stable-id"})
+        status, updated = self.post("/api/project/manage", {"action": "update", "project_id": "stable-id", "name": "Renamed"})
+        self.assertEqual((status, updated["project_id"], updated["name"]), (200, "stable-id", "Renamed"))
+
+    def test_project_ids_cannot_escape_workspace(self):
+        status, _ = self.post("/api/projects", {"name": "Unsafe", "project_id": "../outside"})
+        self.assertEqual(status, 400)
+
+
 class PathsStayInsideTheirRoot(WorkbenchServerTestCase):
     PORT = 8791
 

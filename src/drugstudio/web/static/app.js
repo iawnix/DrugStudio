@@ -995,10 +995,60 @@
       if (!response.ok) throw new Error(data.error || response.statusText);
       const selected = data.selected || app.state?.project || {};
       app.projectId = app.projectId || selected.project_id || ".";
-      $("project-selector").innerHTML = (data.projects || []).map((project) => `<option value="${esc(project.project_id)}" ${project.project_id === app.projectId ? "selected" : ""}>${esc(project.name)}</option>`).join("");
+      const selectable = (data.projects || []).filter(project => !project.archived || project.project_id === app.projectId);
+      $("project-selector").innerHTML = selectable.map((project) => `<option value="${esc(project.project_id)}" ${project.project_id === app.projectId ? "selected" : ""}>${esc(project.name)}${project.archived ? ` · ${esc(t("已归档"))}` : ""}</option>`).join("");
       $("project-description").textContent = selected.name || app.projectId;
+      renderProjectManager(data.projects || []);
       renderChatStatus();
       await fetchChats();
+    } catch (error) { toast(error.message, true); }
+  }
+
+  function renderProjectManager(projects) {
+    const list = $("project-management-list");
+    if (!list) return;
+    list.innerHTML = projects.length ? projects.map(project => {
+      const isRoot = project.project_id === ".";
+      const archived = Boolean(project.archived);
+      return `<div class="project-management-row ${archived ? "archived" : ""}">
+        <div class="project-management-info"><strong>${esc(project.name)}</strong><small>${esc(project.project_id)}${project.description ? ` · ${esc(project.description)}` : ""}</small></div>
+        <div class="project-management-actions">${!isRoot ? `<button type="button" class="icon-button" data-project-action="rename" data-project-id="${esc(project.project_id)}" title="${esc(t("重命名项目"))}" aria-label="${esc(t("重命名项目"))}"><i data-lucide="pencil"></i></button><button type="button" class="icon-button" data-project-action="${archived ? "restore" : "archive"}" data-project-id="${esc(project.project_id)}" title="${esc(t(archived ? "恢复项目" : "归档项目"))}" aria-label="${esc(t(archived ? "恢复项目" : "归档项目"))}"><i data-lucide="${archived ? "archive-restore" : "archive"}"></i></button>` : `<span class="muted mono">${esc(t("工作区"))}</span>`}</div>
+      </div>`;
+    }).join("") : `<div class="empty-state">${esc(t("还没有项目"))}</div>`;
+    list.querySelectorAll("[data-project-action]").forEach(button => button.addEventListener("click", () => manageProject(button.dataset.projectAction, button.dataset.projectId)));
+    window.DrugStudioControls.icons();
+  }
+
+  async function manageProject(action, projectId) {
+    try {
+      if (action === "rename") {
+        const current = [...document.querySelectorAll("[data-project-action='rename']")].find(button => button.dataset.projectId === projectId);
+        const label = current?.closest(".project-management-row")?.querySelector("strong")?.textContent || projectId;
+        const name = window.prompt(t("项目名称"), label);
+        if (!name || name.trim() === label) return;
+        const response = await postJson("/api/project/manage", { action: "update", project_id: projectId, name: name.trim() });
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
+      } else {
+        const response = await postJson("/api/project/manage", { action, project_id: projectId });
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
+        if (action === "archive" && app.projectId === projectId) await selectProject(".");
+      }
+      await fetchProjects();
+      toast(t(action === "archive" ? "项目已归档" : action === "restore" ? "项目已恢复" : "项目已更新"));
+    } catch (error) { toast(error.message, true); }
+  }
+
+  async function createProject(event) {
+    event.preventDefault();
+    const name = $("new-project-name").value.trim();
+    if (!name) return;
+    try {
+      const response = await postJson("/api/projects", { name, project_id: $("new-project-id").value.trim(), description: $("new-project-description").value.trim() });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
+      $("project-form").reset(); $("project-dialog").close();
+      await fetchProjects();
+      await selectProject(data.project_id);
+      toast(t("项目已创建"));
     } catch (error) { toast(error.message, true); }
   }
 
@@ -2433,6 +2483,9 @@
       } catch (error) { toast(error.message, true); }
     });
     $("new-chat").addEventListener("click", newChat);
+    $("manage-projects").addEventListener("click", async () => { await fetchProjects(); $("project-dialog").showModal(); });
+    $("project-form").addEventListener("submit", createProject);
+    document.querySelectorAll("[data-close-project-dialog]").forEach(button => button.addEventListener("click", () => $("project-dialog").close()));
     document.addEventListener("keydown", event => {
       if (event.key === "Escape" && !document.querySelector("dialog[open]") && document.body.classList.contains("drawer-open")) { event.preventDefault(); showView("project"); }
     });

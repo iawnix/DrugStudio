@@ -105,6 +105,14 @@ the upstream artifact chain for a selected result.
 The server can also start with an empty `--runs-root`; create projects and
 conversations first, then initialize the first run with `drugstudio init`.
 
+Projects can also be managed from the Web workbench. The project button in the
+left sidebar creates a project directory below `--workspace-root`, lets you
+rename its display name, and archives or restores it without deleting runs.
+The project ID remains the directory name and may contain only ASCII letters,
+numbers, dots, underscores, and hyphens. Project metadata is kept in the
+private `<project>/.drugstudio/project.json` sidecar; the sidecar is hidden
+from project file browsing.
+
 ### Appearance and language
 
 The top bar offers **System / Light / Dark** appearance and **中文 / EN**.

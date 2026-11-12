@@ -310,6 +310,7 @@
     "在下一个安全检查点暂停": "Pause at the next safe checkpoint",
     "在下一个安全检查点取消": "Cancel at the next safe checkpoint",
     "显示或隐藏对接盒": "Show or hide the docking box",
+    "当前没有保存的对接盒，已根据结合位点生成 5 Å 边距的预览盒。": "No saved docking box is available; a preview box with a 5 Å margin was generated from the binding site.",
     "关闭工具面板": "Close tool panel",
     "无法连接到工作台": "Unable to connect to the workbench",
     "运行 AutoDock Vina 的封装脚本": "Wrapper script for AutoDock Vina",

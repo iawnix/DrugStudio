@@ -1915,6 +1915,22 @@
     return { center, size };
   }
 
+  function derivePreviewBox() {
+    const scene = app.proteinScene;
+    if (!scene) return null;
+    // Reference sites may contain residues but no persisted docking-box
+    // coordinates.  Use the visible site selection as an explicit preview
+    // source so the toggle never silently produces an empty viewer.
+    if (!scene.selection?.size) {
+      const selections = siteResidueSelections();
+      const atoms = scene.atoms().filter(atom => selections.some(sel =>
+        atom.model === 0 && atom.chain === sel.chain && atom.resi === sel.resi && atom.icode === sel.icode));
+      if (atoms.length) scene.setSelection(new Set(atoms.map(DrugStudioMolecule.atomKey)));
+    }
+    if (!scene.selection?.size) return null;
+    try { return scene.candidateBox(5); } catch (_) { return null; }
+  }
+
   function boxCorners(center, size) {
     const [cx, cy, cz] = center, [sx, sy, sz] = size;
     const lo = { x: cx - sx / 2, y: cy - sy / 2, z: cz - sz / 2 };
@@ -2049,6 +2065,13 @@
     if (button) {
       button.classList.toggle("active", visible);
       button.setAttribute("aria-pressed", String(visible));
+    }
+    if (visible && !boxFromInputs()) {
+      const preview = derivePreviewBox();
+      if (preview) {
+        fillBoxInputs(preview);
+        toast(t("当前没有保存的对接盒，已根据结合位点生成 5 Å 边距的预览盒。"));
+      }
     }
     drawDockingBox();
     if (visible) fitProteinView();

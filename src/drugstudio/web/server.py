@@ -131,6 +131,12 @@ class WebApplication:
             "api_key": os.environ.get("OPENAI_API_KEY", ""),
             "base_url": os.environ.get("OPENAI_BASE_URL", ""),
             "model": os.environ.get("DOCK_AGENT_MODEL", ""),
+            # Chat and the scientific execution graph are separate model
+            # consumers.  Keep a shared legacy `model` fallback so older
+            # workbench settings continue to work while allowing each
+            # surface to be switched independently.
+            "chat_model": os.environ.get("DOCK_AGENT_CHAT_MODEL", "") or os.environ.get("DOCK_AGENT_MODEL", ""),
+            "workflow_model": os.environ.get("DOCK_AGENT_WORKFLOW_MODEL", "") or os.environ.get("DOCK_AGENT_MODEL", ""),
         }
         self._llm_config_lock = threading.Lock()
         self._module_config_lock = threading.Lock()
@@ -145,9 +151,16 @@ class WebApplication:
             raise ValueError("cannot load saved model connection settings") from None
         else:
             try:
-                if not isinstance(saved_model, dict) or any(
-                    not isinstance(saved_model.get(key), str) for key in self._llm_config
-                ):
+                if not isinstance(saved_model, dict):
+                    raise ValueError("invalid settings")
+                # Migrate the original single-model file in memory.  It is
+                # rewritten on the next save, so existing installations do
+                # not lose their configured provider or key.
+                saved_model = dict(saved_model)
+                saved_model.setdefault("chat_model", saved_model.get("model", ""))
+                saved_model.setdefault("workflow_model", saved_model.get("model", ""))
+                if any(not isinstance(saved_model.get(key), str)
+                       for key in ("api_key", "base_url", "model", "chat_model", "workflow_model")):
                     raise ValueError("invalid settings")
                 self._llm_config = self._validate_model_config(saved_model)
                 self.model_config_path.chmod(0o600)
@@ -502,7 +515,11 @@ class WebApplication:
         with self._llm_config_lock:
             return {
                 "base_url": self._llm_config["base_url"] or run_model.get("base_url", ""),
+                # `model` remains the compatibility/default field used by
+                # older clients. New clients should use the explicit fields.
                 "model": self._llm_config["model"] or run_model.get("model", "") or "gpt-4.1-mini",
+                "chat_model": self._llm_config["chat_model"] or self._llm_config["model"] or run_model.get("model", "") or "gpt-4.1-mini",
+                "workflow_model": self._llm_config["workflow_model"] or self._llm_config["model"] or run_model.get("model", "") or "gpt-4.1-mini",
                 "api_key_configured": bool(self._llm_config["api_key"]),
             }
 
@@ -510,17 +527,27 @@ class WebApplication:
     def _validate_model_config(payload: dict) -> dict:
         base_url = str(payload.get("base_url") or "").strip().rstrip("/")
         model = str(payload.get("model") or "").strip()
+        chat_model = str(payload.get("chat_model") or model).strip()
+        workflow_model = str(payload.get("workflow_model") or model).strip()
         api_key = str(payload.get("api_key") or "").strip()
-        if len(base_url) > 2048 or len(model) > 160 or len(api_key) > 4096:
+        if (len(base_url) > 2048 or len(model) > 160 or len(chat_model) > 160
+                or len(workflow_model) > 160 or len(api_key) > 4096):
             raise ValueError("model settings exceed the allowed length")
         if base_url:
             parsed = urlparse(base_url)
             if (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or
                     parsed.password or parsed.query or parsed.fragment):
                 raise ValueError("API URL must be an http(s) base URL without credentials or query data")
-        if not model:
+        if not model and not chat_model and not workflow_model:
             raise ValueError("model name is required")
-        return {"base_url": base_url, "model": model, "api_key": api_key}
+        # Store a canonical model as the workflow/default value. This keeps
+        # old CLI and API consumers deterministic while the explicit fields
+        # control the two UI surfaces.
+        model = model or workflow_model or chat_model
+        chat_model = chat_model or model
+        workflow_model = workflow_model or model
+        return {"base_url": base_url, "model": model, "chat_model": chat_model,
+                "workflow_model": workflow_model, "api_key": api_key}
 
     def update_model_config(self, payload: dict) -> dict:
         values = self._validate_model_config(payload)
@@ -1010,7 +1037,7 @@ class WebApplication:
         if not config["api_key"]:
             raise RuntimeError("AI chat needs an API key; configure it in model settings")
         run_model = _public_model_info(run_root) if run_root is not None else {}
-        requested_model = str(payload.get("model") or config["model"]
+        requested_model = str(payload.get("model") or config.get("chat_model") or config["model"]
                               or run_model.get("model") or "gpt-4.1-mini").strip()
         if len(requested_model) > 160:
             raise ValueError("model name is too long")
@@ -1621,7 +1648,10 @@ class WebApplication:
                          "Inspect the run, complete the remaining workflow stages, and summarize the evidence in Chinese.")
             model_info = _public_model_info(run_root) or {}
             model_config = self.model_config(run_root)
-            model = payload.get("model") or model_config["model"]
+            # The execution graph has its own model choice. A chat request
+            # may carry a different temporary model and must not silently
+            # change a scientific run.
+            model = payload.get("workflow_model") or model_config.get("workflow_model") or model_config["model"]
             self.events_for(run_root).set_control_request(None)
             conversation_id = str(payload.get("conversation_id") or "").strip() or None
             if conversation_id:

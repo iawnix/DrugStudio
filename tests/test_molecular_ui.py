@@ -21,7 +21,7 @@ class MolecularUI(BrowserHarness):
         self.assertEqual(self.page.locator('.sequence-chain button.selected').count(),2)
         self.expression('chain A and resi 20 and name CA')
         self.assertIn('1 原子', self.page.inner_text('#viewer-hint'))
-        selected = self.page.evaluate("window.__reviewViewer.selectedAtoms({model:0}).filter(a=>a.style.stick?.color==='orange').map(a=>a.resi)")
+        selected = self.page.evaluate("window.__reviewViewer.selectedAtoms({model:0}).filter(a=>a.style.stick?.colorscheme==='Jmol').map(a=>a.resi)")
         self.assertEqual(selected,[20,20,20,20])
         self.page.click('#selection-save'); self.page.click('#selection-clear'); self.page.click('#selection-restore')
         self.assertIn('1 原子',self.page.inner_text('#viewer-hint'))
@@ -91,3 +91,16 @@ class MolecularUI(BrowserHarness):
         self.assertGreater(self.page.evaluate("window.__reviewViewer.selectedAtoms({model:0}).filter(a => a.style?.stick).length"),0)
         self.page.click('[data-protein-style="cartoon"]')
         self.assertTrue(self.page.evaluate("window.__reviewViewer.getModel(0).selectedAtoms({}).every(a => a.style?.cartoon && !a.style?.stick)"))
+
+    def test_sticks_keep_element_colors_when_residues_are_selected(self):
+        self.open_structure()
+        self.page.locator('.molecule-tools > summary').first.click()
+        self.page.select_option('#molecule-style', 'sticks')
+        self.page.click('[data-residue="0"]')
+        colors = self.page.evaluate('''() => {
+          const atoms = window.__reviewViewer.getModel(0).selectedAtoms({});
+          return atoms.filter(a => ['N','C','O'].includes(a.elem)).map(a => ({elem:a.elem, color:a.style?.stick?.color, scheme:a.style?.stick?.colorscheme}));
+        }''')
+        self.assertTrue(colors)
+        self.assertTrue(all(item['scheme'] == 'Jmol' and item['color'] is None for item in colors))
+        self.assertGreaterEqual(len({item['elem'] for item in colors}), 3)

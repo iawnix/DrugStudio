@@ -107,7 +107,7 @@
       this.models[0]?.setStyle({}, this.siteMode ? {cartoon:{color:'#aab4bf',opacity:.3}} : styles[this.style] || styles.cartoon);
       this.models.slice(1).forEach(model => model.setStyle({}, styles.ball));
       this.overlays.forEach(layer => this.eachSelection(new Set(layer.ids), sel => this.viewer.addStyle(sel, layer.style)));
-      this.eachSelection(this.selection, sel => this.viewer.addStyle(sel, {cartoon:{color:this.color,opacity:1},stick:{color:this.color,radius:.24}}));
+      this.eachSelection(this.selection, sel => this.viewer.addStyle(sel, {cartoon:{color:this.color,opacity:1},stick:{colorscheme:'Jmol',radius:.24}}));
       this.viewer.render();
     }
     focus() { if (this.selection.size) { const atoms = this.selected(); this.viewer.zoomTo({predicate:a => atoms.includes(a)}); } else this.viewer.zoomTo(); if (this.host.clientWidth > 0 && this.host.clientWidth < this.host.clientHeight) this.viewer.zoom(this.host.clientWidth / this.host.clientHeight); this.viewer.render(); }

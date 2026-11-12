@@ -3,6 +3,8 @@
   "use strict";
   const MESSAGES = {
   "en": {
+    "Sticks · 元素色": "Sticks · element colors",
+    "Ball & stick · 元素色": "Ball & stick · element colors",
     "定位位点": "Locate site",
     "点击序列中的残基以高亮并聚焦": "Select a residue in the sequence to highlight and focus it",
     "当前结构未找到位点残基，请检查结构和残基编号。": "No site residues match this structure. Check the structure and residue numbering.",

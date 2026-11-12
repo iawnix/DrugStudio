@@ -975,7 +975,10 @@ class WebApplication:
     # Tools that change something. These stop the turn and wait for a person,
     # because a prompt saying "ask before destructive operations" is a
     # suggestion to the model, not a control the user holds.
-    MUTATING_TOOLS = {"write_file", "run_command"}
+    # Lifecycle changes go through the same human approval gate as file and
+    # shell mutations. The chat supervisor can propose them, but cannot alter
+    # workflow state directly.
+    MUTATING_TOOLS = {"write_file", "run_command", "request_workflow_action"}
     TOOL_CALL_LIMIT = 8
 
     def chat_context(self, run_root: Path | None) -> dict:
@@ -1050,7 +1053,7 @@ class WebApplication:
                            timeout=90, max_retries=1)
         return model.bind_tools(tools, parallel_tool_calls=False)
 
-    def _chat_tools(self, project_root: Path, actions: list):
+    def _chat_tools(self, project_root: Path, actions: list, run_root: Path | None = None):
         from langchain_core.tools import StructuredTool
 
         def list_files(path: str = "") -> str:
@@ -1073,8 +1076,32 @@ class WebApplication:
             actions.append({"tool": "run_command", "command": command, "returncode": result["returncode"]})
             return json.dumps(result, ensure_ascii=False)
 
+        def request_workflow_action(action: str, stage: str = "", prompt: str = "") -> str:
+            """Request start, pause, cancel or stage rerun for the active run.
+
+            This is a proposal from the chat supervisor. The workbench asks a
+            person for approval before the workflow control plane is invoked.
+            """
+            if run_root is None:
+                raise ValueError("the active project has no research run")
+            action = str(action or "").strip().lower()
+            stage = str(stage or "").strip().lower()
+            if action not in {"start", "pause", "cancel", "rerun"}:
+                raise ValueError("unsupported workflow action")
+            if action == "rerun":
+                if stage not in {"structure", "receptor", "ligand", "pocket", "docking", "assessment"}:
+                    raise ValueError("rerun requires a valid scientific stage")
+                result = self.rerun_from(stage, run_root, actor="chat_supervisor")
+            elif action in {"pause", "cancel"}:
+                result = self.request_control(action, run_root, actor="chat_supervisor")
+            else:
+                result = self.start_workflow({"prompt": prompt or
+                                              "Inspect the run, complete the remaining workflow stages, and summarize the evidence in Chinese."},
+                                             run_root)
+            return json.dumps(result, ensure_ascii=False)
+
         return [StructuredTool.from_function(function) for function
-                in (list_files, read_file, write_file, run_command)]
+                in (list_files, read_file, write_file, run_command, request_workflow_action)]
 
     def _chat_system_prompt(self, project_root: Path, run_root: Path | None) -> str:
         context = self.chat_context(run_root)
@@ -1090,8 +1117,10 @@ class WebApplication:
             "or chemical property; say what is missing instead.\n"
             "Docking scores are engine-specific empirical scores, not binding affinities, and "
             "a predicted pocket is not an established binding site. Say so when it matters.\n"
-            "write_file and run_command stop and wait for the user to approve them, so state "
+            "write_file, run_command and request_workflow_action stop and wait for the user to approve them, so state "
             "plainly what you intend to do and why before requesting one.\n"
+            "Use request_workflow_action for workflow lifecycle changes. Do not use shell commands "
+            "to edit manifests, control files or bypass human review.\n"
             "Never expose credentials. Reply in the user's language, preferring Chinese when "
             "they write Chinese. Use Markdown for lists, tables and links, fenced blocks for "
             "code, and $...$ or $$...$$ delimiters for mathematical formulas."
@@ -1175,6 +1204,9 @@ class WebApplication:
         summary = {"action_id": action_id, "tool": call.get("name"),
                    "command": str(args.get("command") or "")[:4000],
                    "path": str(args.get("path") or "")[:1000],
+                   "workflow_action": str(args.get("action") or "")[:80],
+                   "workflow_stage": str(args.get("stage") or "")[:80],
+                   "workflow_prompt": str(args.get("prompt") or "")[:1000],
                    "cwd": str(args.get("cwd") or "")[:1000],
                    "content_preview": str(args.get("content") or "")[:2000],
                    "content_bytes": len(str(args.get("content") or "").encode("utf-8"))}
@@ -1197,7 +1229,7 @@ class WebApplication:
         call = state["call"]
         run_root, project_root = state["run_root"], state["project_root"]
         messages, actions = state["messages"], state["actions"]
-        tools = self._chat_tools(project_root, actions)
+        tools = self._chat_tools(project_root, actions, run_root)
         tool_map = {tool.name: tool for tool in tools}
         if approved:
             tool = tool_map.get(call.get("name"))
@@ -1247,7 +1279,7 @@ class WebApplication:
         if not isinstance(history, list) or not history:
             raise ValueError("messages must contain the conversation")
         actions: list = []
-        tools = self._chat_tools(project_root, actions)
+        tools = self._chat_tools(project_root, actions, run_root)
         messages = [SystemMessage(content=self._chat_system_prompt(project_root, run_root))]
         messages.extend(self._restore_messages(history))
         bound_model = self._chat_model(payload, run_root, tools)
@@ -1380,7 +1412,7 @@ class WebApplication:
         return {"selected": self.run_key(candidate), "run_id": manifest.get("run_id"),
                 "project_id": self.owning_project_id(candidate, self.run_metadata(candidate, manifest))}
 
-    def request_control(self, action: str, run_root: Path | None = None) -> dict:
+    def request_control(self, action: str, run_root: Path | None = None, *, actor: str = "human") -> dict:
         run_root = run_root or self.default_run_root
         if action not in {"pause", "cancel"}:
             raise ValueError("control action must be pause or cancel")
@@ -1388,10 +1420,10 @@ class WebApplication:
             raise RuntimeError("there is no active web-started workflow to control")
         events = self.events_for(run_root)
         events.set_control_request(action)
-        event = events.emit("control_requested", status=f"{action}_requested", action=action)
+        event = events.emit("control_requested", status=f"{action}_requested", action=action, actor=actor)
         return {"status": f"{action}_requested", "event_id": event["event_id"]}
 
-    def rerun_from(self, stage: str, run_root: Path | None = None) -> dict:
+    def rerun_from(self, stage: str, run_root: Path | None = None, *, actor: str = "human") -> dict:
         run_root = run_root or self.default_run_root
         if stage not in {"structure", "receptor", "ligand", "pocket", "docking", "assessment"}:
             raise ValueError("unsupported rerun stage")
@@ -1470,7 +1502,7 @@ class WebApplication:
         state["tasks"] = [] if selected <= order.index("docking") else state.get("tasks", [])
         state["status"] = "created"
         state["current_node"] = None
-        state.setdefault("decisions", []).append({"agent": "human", "action": "branch_rerun",
+        state.setdefault("decisions", []).append({"agent": actor, "action": "branch_rerun",
             "stage": stage, "parent_run_id": parent_run_id, "timestamp": datetime.now(timezone.utc).isoformat()})
         replacement = branch / "manifest.next.json"
         replacement.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")

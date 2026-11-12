@@ -11,6 +11,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from drugstudio import parameters
 from drugstudio.web.server import WebApplication
@@ -198,6 +199,17 @@ class ApprovalGate(ChatTestCase):
         outcome, _ = self.drive([self.call("write_file", {"path": "new.txt", "content": "x"})])
         self.assertIn("pending", outcome)
         self.assertFalse((self.project_root / "new.txt").exists())
+
+    def test_workflow_control_is_a_supervisor_proposal_until_approved(self):
+        with patch.object(self.app, "request_control", return_value={"status": "pause_requested"}) as control:
+            outcome, _ = self.drive([self.call("request_workflow_action", {"action": "pause"})])
+            self.assertIn("pending", outcome)
+            control.assert_not_called()
+            action_id = outcome["pending"]["action_id"]
+            self.app._chat_model = lambda payload, run_root, tools: ScriptedModel([AIMessage(content="已请求暂停")])
+            resumed = self.app.resolve_chat_action({"action_id": action_id, "approved": True})
+            control.assert_called_once_with("pause", self.run_root, actor="chat_supervisor")
+            self.assertEqual(resumed["reply"], "已请求暂停")
 
     def test_reads_need_no_approval(self):
         (self.project_root / "notes.txt").write_text("hello", encoding="utf-8")

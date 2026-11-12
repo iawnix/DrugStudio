@@ -416,6 +416,7 @@ body.drawer-open .context-backdrop { display: block; }
 .project-management-list { display: grid; gap: 5px; max-height: 280px; overflow: auto; }
 .project-management-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
 .project-management-info { min-width: 0; display: grid; gap: 3px; }.project-management-info strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 11px; }.project-management-info small { color: var(--muted); font: 9px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.project-management-actions { display: flex; gap: 4px; }.project-management-actions .icon-button { width: 28px; height: 28px; }.project-management-row.archived { opacity: .68; }
+.project-management-actions .icon-button.danger:hover { color: var(--coral); border-color: var(--coral); background: color-mix(in srgb, var(--coral) 10%, transparent); }
 @media (max-width: 760px) { .project-form-grid { grid-template-columns: 1fr; } }
 .chat-filter-toggle { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); }
 .chat-filter-toggle button { min-height: 23px; padding: 3px 7px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; }

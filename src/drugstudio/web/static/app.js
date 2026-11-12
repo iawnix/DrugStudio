@@ -1012,7 +1012,7 @@
       const archived = Boolean(project.archived);
       return `<div class="project-management-row ${archived ? "archived" : ""}">
         <div class="project-management-info"><strong>${esc(project.name)}</strong><small>${esc(project.project_id)}${project.description ? ` · ${esc(project.description)}` : ""}</small></div>
-        <div class="project-management-actions">${!isRoot ? `<button type="button" class="icon-button" data-project-action="rename" data-project-id="${esc(project.project_id)}" title="${esc(t("重命名项目"))}" aria-label="${esc(t("重命名项目"))}"><i data-lucide="pencil"></i></button><button type="button" class="icon-button" data-project-action="${archived ? "restore" : "archive"}" data-project-id="${esc(project.project_id)}" title="${esc(t(archived ? "恢复项目" : "归档项目"))}" aria-label="${esc(t(archived ? "恢复项目" : "归档项目"))}"><i data-lucide="${archived ? "archive-restore" : "archive"}"></i></button>` : `<span class="muted mono">${esc(t("工作区"))}</span>`}</div>
+        <div class="project-management-actions">${!isRoot ? `<button type="button" class="icon-button" data-project-action="rename" data-project-id="${esc(project.project_id)}" title="${esc(t("重命名项目"))}" aria-label="${esc(t("重命名项目"))}"><i data-lucide="pencil"></i></button><button type="button" class="icon-button" data-project-action="${archived ? "restore" : "archive"}" data-project-id="${esc(project.project_id)}" title="${esc(t(archived ? "恢复项目" : "归档项目"))}" aria-label="${esc(t(archived ? "恢复项目" : "归档项目"))}"><i data-lucide="${archived ? "archive-restore" : "archive"}"></i></button><button type="button" class="icon-button danger" data-project-action="delete" data-project-id="${esc(project.project_id)}" title="${esc(t("移入回收站"))}" aria-label="${esc(t("移入回收站"))}"><i data-lucide="trash-2"></i></button>` : `<span class="muted mono">${esc(t("工作区"))}</span>`}</div>
       </div>`;
     }).join("") : `<div class="empty-state">${esc(t("还没有项目"))}</div>`;
     list.querySelectorAll("[data-project-action]").forEach(button => button.addEventListener("click", () => manageProject(button.dataset.projectAction, button.dataset.projectId)));
@@ -1021,6 +1021,10 @@
 
   async function manageProject(action, projectId) {
     try {
+      if (action === "delete") {
+        const confirmation = window.prompt(t("请输入项目 ID 以确认移入回收站：{p0}", {p0: projectId}));
+        if (confirmation !== projectId) return;
+      }
       if (action === "rename") {
         const current = [...document.querySelectorAll("[data-project-action='rename']")].find(button => button.dataset.projectId === projectId);
         const label = current?.closest(".project-management-row")?.querySelector("strong")?.textContent || projectId;
@@ -1031,10 +1035,10 @@
       } else {
         const response = await postJson("/api/project/manage", { action, project_id: projectId });
         const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText);
-        if (action === "archive" && app.projectId === projectId) await selectProject(".");
+        if ((action === "archive" || action === "delete") && app.projectId === projectId) await selectProject(".");
       }
       await fetchProjects();
-      toast(t(action === "archive" ? "项目已归档" : action === "restore" ? "项目已恢复" : "项目已更新"));
+      toast(t(action === "archive" ? "项目已归档" : action === "restore" ? "项目已恢复" : action === "delete" ? "项目已移入回收站" : "项目已更新"));
     } catch (error) { toast(error.message, true); }
   }
 

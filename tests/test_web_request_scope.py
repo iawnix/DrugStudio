@@ -217,6 +217,17 @@ class ProjectManagement(WorkbenchServerTestCase):
         status, updated = self.post("/api/project/manage", {"action": "update", "project_id": "stable-id", "name": "Renamed"})
         self.assertEqual((status, updated["project_id"], updated["name"]), (200, "stable-id", "Renamed"))
 
+    def test_delete_moves_project_to_hidden_trash(self):
+        self.post("/api/projects", {"name": "Disposable", "project_id": "disposable"})
+        (self.root / "disposable" / "note.txt").write_text("keep for recovery", encoding="utf-8")
+        status, deleted = self.post("/api/project/manage", {"action": "delete", "project_id": "disposable"})
+        self.assertEqual((status, deleted["deleted"]), (200, True))
+        self.assertFalse((self.root / "disposable").exists())
+        trash = self.root / deleted["trash_path"]
+        self.assertEqual((trash / "note.txt").read_text(encoding="utf-8"), "keep for recovery")
+        status, _ = self.post("/api/select-project", {"project_id": deleted["trash_path"]})
+        self.assertEqual(status, 400)
+
     def test_project_ids_cannot_escape_workspace(self):
         status, _ = self.post("/api/projects", {"name": "Unsafe", "project_id": "../outside"})
         self.assertEqual(status, 400)

@@ -108,6 +108,9 @@ conversations first, then initialize the first run with `drugstudio init`.
 Projects can also be managed from the Web workbench. The project button in the
 left sidebar creates a project directory below `--workspace-root`, lets you
 rename its display name, and archives or restores it without deleting runs.
+The delete action requires typing the project ID and moves the complete
+project directory to `<workspace-root>/.trash/` instead of immediately
+removing scientific outputs.
 The project ID remains the directory name and may contain only ASCII letters,
 numbers, dots, underscores, and hyphens. Project metadata is kept in the
 private `<project>/.drugstudio/project.json` sidecar; the sidecar is hidden

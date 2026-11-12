@@ -302,14 +302,30 @@ class WebApplication:
             raise ValueError("the workspace root cannot be managed as a project")
         metadata = self._read_project_metadata(root)
         if action == "archive" or action == "restore":
-            if any(self.workflow_running(path) for path in self.runs_root.rglob("manifest.json")
-                   if self.owning_project_id(path.parent, self.run_metadata(path.parent)) == project_id):
+            if self._project_has_running_workflow(root):
                 raise ValueError("cannot archive a project while a workflow is running")
             now = datetime.now(timezone.utc).isoformat()
             metadata.update({"project_id": project_id, "name": metadata.get("name") or root.name,
                              "updated_at": now, "archived_at": now if action == "archive" else None})
             self._write_project_metadata(root, metadata)
             return self.project_identity(root) | {"updated_at": now}
+        if action == "delete":
+            if self._project_has_running_workflow(root):
+                raise ValueError("cannot delete a project while a workflow is running")
+            trash_root = self.workspace_root / ".trash"
+            trash_root.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            destination = trash_root / f"{root.name}-{stamp}-{uuid.uuid4().hex[:8]}"
+            root.rename(destination)
+            try:
+                self.default_run_root.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                self.default_run_root = self.workspace_root
+                self.default_project_root = self.workspace_root
+            return {"deleted": True, "project_id": project_id,
+                    "trash_path": destination.relative_to(self.workspace_root).as_posix()}
         if action == "update":
             display_name = str(name or metadata.get("name") or root.name).strip()
             if not display_name or len(display_name) > 120:
@@ -320,6 +336,17 @@ class WebApplication:
             self._write_project_metadata(root, metadata)
             return self.project_identity(root) | {"updated_at": now}
         raise ValueError("unsupported project action")
+
+    def _project_has_running_workflow(self, project_root: Path) -> bool:
+        with self._process_lock:
+            for run_root, process in self._processes.items():
+                if process.poll() is None:
+                    try:
+                        run_root.relative_to(project_root)
+                    except ValueError:
+                        continue
+                    return True
+        return False
 
     def ensure_run_metadata(self, run_root: Path, manifest: dict | None = None, **updates: object) -> dict:
         manifest = manifest or self.manifest(run_root)
@@ -571,6 +598,9 @@ class WebApplication:
             raise ValueError("project symlinks are not supported")
         candidate = source.resolve()
         candidate.relative_to(self.workspace_root)
+        trash_root = (self.workspace_root / ".trash").resolve()
+        if candidate == trash_root or trash_root in candidate.parents:
+            raise ValueError("deleted projects are not selectable")
         if not candidate.is_dir():
             raise ValueError("project directory not found")
         return candidate

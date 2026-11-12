@@ -238,7 +238,7 @@
     af3_gpu_count: ["GPU 数量", "AF3 PBS 任务申请的 GPU 数"],
     af3_gpu_id: ["GPU ID", "节点上的物理 GPU 编号；留空则由调度器决定"],
     af3_terms_acknowledged: ["AF3 条款确认", "确认本机 AlphaFold 3 模型条款适用于本次运行"],
-    af3_host: ["PBS host", "可选的远端 PBS 主机"],
+    af3_host: ["PBS 计算节点", "PBS 的计算节点资源名；留空则由调度器选择，不是 SSH 主机或 IP"],
     af3_qsub: ["qsub", "PBS 提交命令"],
     af3_qstat: ["qstat", "PBS 状态查询命令"]
   };

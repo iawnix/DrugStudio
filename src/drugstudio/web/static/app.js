@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalStarting: false, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, moduleConfig: null, codeEditor: null, runKey: "",
+  const app = { state: null, events: [], eventSource: null, proteinViewer: null, proteinStyle: "cartoon", structurePanel: null, ligandViewer: null, ligandKey: null, selectedPocket: null, structureArtifact: null, selectedStage: null, pricing: {}, provenance: null, workflowCanvas: { x: 0, y: 0, scale: 1, ready: false, pointer: null, moved: false }, projectId: ".", fileDirectory: "", filePath: "", terminalCwd: "", terminalSession: null, terminalStarting: false, terminalCursor: 0, terminalPollTimer: null, terminalInputBuffer: "", terminalInputTimer: null, terminal: null, terminalFit: null, chatHistory: [], chatSessions: [], chatId: null, chatBusy: false, chatFilter: "active", modelConfig: null, moduleConfig: null, codeEditor: null, runKey: "",
     boxVisible: false, boxShapes: [], pocketLabel: null, structureAtoms: [],
     structureRequestId: 0, structureCoordinateKey: null, structureText: null, boxDraftRun: null,
     parameters: null, parameterEdits: {}, parameterRequestId: 0, parameterSaving: false,
@@ -365,9 +365,11 @@
     app.pocketShape = null;
     app.ligandKey = null;
     app.boxShapes = [];
+    app.boxVisible = false;
     app.structureAtoms = [];
     app.structureText = null; app.structureCoordinateKey = null;
     app.structureRequestId += 1;
+    updateStructureBoxUI();
   }
 
   async function fetchState() {
@@ -1712,6 +1714,8 @@
     const pockets = currentPockets();
     const referenceResidues = app.state.target?.binding_site_residues || [];
     $("pocket-count").textContent = pockets.length || (referenceResidues.length ? t("参考位点") : "—");
+    const badge = $("structure-pocket-badge");
+    if (badge) badge.textContent = pockets.length ? String(pockets.length) : referenceResidues.length ? "1" : "";
     const html = pockets.length ? pockets.map((pocket) => {
       const selected = app.selectedPocket?.rank === pocket.rank || (!app.selectedPocket && pocket.selected);
       return `<div class="pocket-card ${selected ? "selected" : ""}" data-pocket-rank="${pocket.rank}">
@@ -1865,6 +1869,7 @@
       $("structure-sequence").querySelectorAll('[data-residue]').forEach(button => { const active = keys.has(residues[Number(button.dataset.residue)].key); button.classList.toggle('selected',active); button.setAttribute('aria-pressed',String(active)); });
       const names = [...new Set(atoms.filter(a => a.model === 0).map(a => `${a.chain || '∅'}:${a.resi}${a.icode || ''}`))];
       $("viewer-hint").textContent = atoms.length ? `${names.slice(0,4).join(', ')}${names.length > 4 ? '…' : ''} · ${t("已选择")} ${keys.size} ${t("个残基")} · ${atoms.length} ${t("原子")}` : `${t("点击序列中的残基以高亮并聚焦")} · ${t("已选择")} 0 ${t("个残基")} · 0 ${t("原子")}`;
+      $("structure-view-status").textContent = atoms.length ? `${atoms.length} ${t("原子")}` : t("就绪");
       $("selection-message").textContent = '';
       app.selectionDraft = null; $("selection-box-summary").textContent = '';
     };
@@ -1886,6 +1891,7 @@
     $("molecule-style").addEventListener('change',e => { if (app.proteinScene) { app.proteinScene.siteMode = false; app.proteinScene.style = e.target.value; app.proteinScene.paint(); syncProteinControls(); } });
     const surface = async () => { const scene = app.proteinScene; if (!scene) return; $("surface-status").textContent = t("正在更新"); try { await scene.surface($("molecule-surface").checked,Number($("surface-opacity").value)); if (scene === app.proteinScene) $("surface-status").textContent = ''; } catch (error) { $("surface-status").textContent = error.message; } };
     $("molecule-surface").addEventListener('change',surface); $("surface-opacity").addEventListener('change',surface);
+    $("surface-opacity").addEventListener('input', (event) => { $("surface-opacity-value").textContent = Number(event.target.value).toFixed(1); });
     action('selection-focus',scene => scene.focus());
     action('selection-clear',scene => scene.setSelection(new Set()));
     action('selection-label',scene => scene.labelSelection());
@@ -1901,7 +1907,7 @@
     action('selection-box',scene => {
       const box = scene.candidateBox(Number($("selection-padding").value));
       app.selectionDraft = { ...box, artifact_id:app.structureArtifact.artifact_id,sha256:app.structureArtifact.sha256,model:1,residues:scene.residues().filter(r => r.ids.some(id => scene.selection.has(id))).map(r => ({chain:r.chain,resi:r.resi,icode:r.icode})), scope:structureCoordinateKey() };
-      fillBoxInputs(box); app.boxVisible = true; $("toggle-box").setAttribute('aria-pressed','true'); drawDockingBox();
+      fillBoxInputs(box); setBoxVisible(true); openStructurePanel("box");
       $("selection-box-summary").textContent = `${t("草稿")} · ${box.center.map(v => fmt(v,2)).join(', ')} · ${box.size.map(v => fmt(v,1)).join(' × ')} Å`;
     });
     action('selection-apply',async () => {
@@ -1913,6 +1919,30 @@
       app.selectionDraft = null; $("selection-box-summary").textContent = t("已应用，等待重新对接"); await fetchState(); toast(t("位点选择已记录"));
     });
     $("structure-open-file").addEventListener('click',() => showView('files'));
+    ["center", "size"].forEach((kind) => ["x", "y", "z"].forEach((axis) => {
+      const input = $(`structure-${kind}-${axis}`);
+      if (!input) return;
+      input.addEventListener("input", () => {
+        const target = $(`${kind}-${axis}`);
+        if (target) target.value = input.value;
+        onBoxInputChanged();
+      });
+    }));
+    document.querySelectorAll("[data-box-preset]").forEach((button) => button.addEventListener("click", () => {
+      const size = Number(button.dataset.boxPreset);
+      BOX_AXES.forEach((axis) => { $(`structure-size-${axis}`).value = size; $(`size-${axis}`).value = size; });
+      document.querySelectorAll("[data-box-preset]").forEach((item) => item.classList.toggle("active", item === button));
+      setBoxVisible(true); openStructurePanel("box");
+    }));
+    $("structure-box-focus").addEventListener("click", () => { setBoxVisible(true); if (app.proteinViewer) fitProteinView(); });
+    $("structure-box-review").addEventListener("click", () => showView("review"));
+  }
+
+  function bindStructurePanels() {
+    document.querySelectorAll("[data-structure-panel]").forEach((button) => button.addEventListener("click", () => openStructurePanel(button.dataset.structurePanel)));
+    document.querySelectorAll("[data-close-structure-panel]").forEach((button) => button.addEventListener("click", () => openStructurePanel(button.closest("[data-structure-tray]")?.dataset.structureTray)));
+    $("structure-reset-view").addEventListener("click", () => { if (app.proteinViewer) { drawDockingBox(); fitProteinView(); } });
+    openStructurePanel("visual");
   }
 
   function siteResidueSelections() {
@@ -1931,6 +1961,56 @@
       const active = button.dataset.proteinStyle === app.proteinStyle;
       button.classList.toggle('active', active); button.setAttribute('aria-pressed',String(active));
     });
+    const context = $("structure-view-context");
+    if (context) context.textContent = app.proteinStyle === "site" ? t("结合位点") : t("整体");
+    const status = $("structure-view-status");
+    if (status) status.textContent = scene.selected()?.length ? `${scene.selected().length} ${t("原子")}` : t("就绪");
+  }
+
+  function openStructurePanel(name) {
+    const valid = ["visual", "pockets", "box"];
+    const next = valid.includes(name) && app.structurePanel !== name ? name : (valid.includes(name) ? null : app.structurePanel);
+    app.structurePanel = next;
+    document.querySelectorAll("[data-structure-tray]").forEach((tray) => {
+      const open = next === tray.dataset.structureTray;
+      tray.classList.toggle("open", open);
+      tray.setAttribute("aria-hidden", String(!open));
+    });
+    document.querySelectorAll("[data-structure-panel]").forEach((button) => {
+      const active = next === button.dataset.structurePanel;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-expanded", String(active));
+    });
+    if (next === "pockets") renderPockets();
+    if (next === "box") updateStructureBoxUI();
+  }
+
+  function updateStructureBoxUI() {
+    const box = boxFromInputs();
+    const state = $("structure-box-state");
+    const summary = $("structure-box-summary");
+    const toggle = $("toggle-box");
+    if (state) {
+      state.textContent = app.boxVisible ? t("显示中") : t("隐藏");
+      state.classList.toggle("visible", Boolean(app.boxVisible));
+    }
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", String(Boolean(app.boxVisible)));
+      toggle.querySelector("span")?.replaceChildren(document.createTextNode(app.boxVisible ? t("隐藏对接盒") : t("显示对接盒")));
+      const icon = toggle.querySelector("svg");
+      if (icon) icon.setAttribute("data-lucide", app.boxVisible ? "eye-off" : "eye");
+      window.DrugStudioControls.icons();
+    }
+    if (summary) {
+      summary.querySelector("span").textContent = box
+        ? `${app.boxVisible ? t("当前对接搜索空间") : t("已配置对接搜索空间")} · ${box.center.map((value) => fmt(value, 1)).join(" / ")} · ${box.size.map((value) => fmt(value, 1)).join(" × ")} Å`
+        : t("打开对接盒后，搜索空间会叠加在结构上。");
+    }
+    const readout = $("box-readout");
+    if (readout) {
+      readout.hidden = !app.boxVisible || !box;
+      if (box) readout.textContent = `${t("中心")} ${box.center.map((value) => fmt(value, 2)).join(" · ")} · ${t("尺寸")} ${box.size.map((value) => fmt(value, 1)).join(" × ")} Å`;
+    }
   }
 
   function setProteinStyle(style) {
@@ -1962,6 +2042,8 @@
     BOX_AXES.forEach((axis, index) => {
       $(`center-${axis}`).value = box.center[index] ?? "";
       $(`size-${axis}`).value = box.size[index] ?? 24;
+      if ($(`structure-center-${axis}`)) $(`structure-center-${axis}`).value = box.center[index] ?? "";
+      if ($(`structure-size-${axis}`)) $(`structure-size-${axis}`).value = box.size[index] ?? 24;
     });
     onBoxInputChanged();
   }
@@ -1970,6 +2052,7 @@
     resetParameterContext();
     app.selectedPocket = null; app.structureArtifact = null; app.boxDraftRun = null; app.resultTaskKey = null;
     BOX_AXES.forEach(axis => { $(`center-${axis}`).value = ""; $(`size-${axis}`).value = 24; });
+    BOX_AXES.forEach(axis => { if ($(`structure-center-${axis}`)) $(`structure-center-${axis}`).value = ""; if ($(`structure-size-${axis}`)) $(`structure-size-${axis}`).value = 24; });
     app.structureAtoms = []; renderBoxCoverage();
   }
 
@@ -2009,9 +2092,9 @@
     if (!app.proteinViewer) return;
     app.boxShapes.forEach((shape) => { try { app.proteinViewer.removeShape(shape); } catch (_) { /* gone */ } });
     app.boxShapes = [];
-    if (!app.boxVisible) { app.proteinViewer.render(); return; }
+    if (!app.boxVisible) { app.proteinViewer.render(); updateStructureBoxUI(); return; }
     const box = boxFromInputs();
-    if (!box) { app.proteinViewer.render(); return; }
+    if (!box) { app.proteinViewer.render(); updateStructureBoxUI(); return; }
     const { lo, hi } = boxCorners(box.center, box.size);
     const at = (ix, iy, iz) => ({ x: ix ? hi.x : lo.x, y: iy ? hi.y : lo.y, z: iz ? hi.z : lo.z });
     // Twelve edges of the cuboid, drawn as lines so the receptor stays visible
@@ -2036,6 +2119,7 @@
       app.boxShapes.push(app.proteinViewer.addLine({ start, end, color, linewidth: 3 }));
     });
     app.proteinViewer.render();
+    updateStructureBoxUI();
   }
 
   // Coordinates are parsed from the PDB text we already fetch, not read back
@@ -2143,6 +2227,7 @@
     drawDockingBox();
     if (visible) fitProteinView();
     renderBoxCoverage();
+    updateStructureBoxUI();
   }
 
   function renderLigandChoices() {
@@ -2504,6 +2589,9 @@
     $("project-form").addEventListener("submit", createProject);
     document.querySelectorAll("[data-close-project-dialog]").forEach(button => button.addEventListener("click", () => $("project-dialog").close()));
     document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && document.querySelector("#view-structure.active .structure-tray.open")) {
+        event.preventDefault(); openStructurePanel(app.structurePanel); return;
+      }
       if (event.key === "Escape" && !document.querySelector("dialog[open]") && document.body.classList.contains("drawer-open")) { event.preventDefault(); showView("project"); }
     });
     $("context-backdrop")?.addEventListener("click", () => showView("project"));
@@ -2535,6 +2623,7 @@
     $("chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("chat-form").requestSubmit(); } });
     document.querySelectorAll("[data-protein-style]").forEach((button) => button.addEventListener("click", () => setProteinStyle(button.dataset.proteinStyle)));
     bindMolecularControls();
+    bindStructurePanels();
     $("structure-select").addEventListener("change", async (event) => { const picked = structureCandidates()[Number(event.target.value)]; disposeViewers(); app.structureArtifact = picked; renderPoseChoices(); await loadProtein(); });
     $("pose-select").addEventListener("change", async () => { const picked = app.structureArtifact, view = app.proteinViewer?.getView(); disposeViewers(); app.structureArtifact = picked; await loadProtein(); if (view && app.structureArtifact === picked && app.proteinViewer) { app.proteinViewer.setView(view); app.proteinViewer.render(); } });
     $("ligand-select").addEventListener("change", (event) => { try { app.ligandViewer?.clear?.(); } catch (_) { /* already gone */ } app.ligandViewer = null; app.ligandKey = null; loadLigand(event.target.value); }); $("submit-review").addEventListener("click", () => busy("submit-review", submitReview));

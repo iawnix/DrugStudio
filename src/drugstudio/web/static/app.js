@@ -1009,6 +1009,9 @@
       const selectable = (data.projects || []).filter(project => !project.archived || project.project_id === app.projectId);
       $("project-selector").innerHTML = selectable.map((project) => `<option value="${esc(project.project_id)}" ${project.project_id === app.projectId ? "selected" : ""}>${esc(project.name)}${project.archived ? ` · ${esc(t("已归档"))}` : ""}</option>`).join("");
       $("project-description").textContent = selected.name || app.projectId;
+      const goal = String(selected.description || "").trim();
+      $("project-goal").textContent = goal || t("从设计问题开始，逐步形成可复现的研究运行和证据。");
+      $("project-goal").classList.toggle("placeholder", !goal);
       renderProjectManager(data.projects || []);
       renderChatStatus();
       await fetchChats();
@@ -1402,7 +1405,7 @@
     return typeof value === "string" ? value : "";
   }
 
-  function chatWelcome() { return `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个研究问题开始"))}</h2><p>${esc(t("我可以帮你读取结构、准备受体和配体、运行对接，并解释每一步的证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("解释当前工作流下一步需要什么"))}">${esc(t("解释下一步"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`; }
+  function chatWelcome() { return `<div class="chat-welcome"><div class="chat-welcome-mark"><i data-lucide="sparkles"></i></div><h2>${esc(t("从一个设计目标开始"))}</h2><p>${esc(t("我会把目标整理成可审核的研究计划，并在同一个项目中管理结构、分子、运行和证据。"))}</p><div class="chat-suggestions"><button type="button" data-chat-suggestion="${esc(t("为当前项目建立结构基础设计计划"))}">${esc(t("建立结构基础设计计划"))}</button><button type="button" data-chat-suggestion="${esc(t("检查当前项目的结构和配体输入"))}">${esc(t("检查当前项目的输入"))}</button><button type="button" data-chat-suggestion="${esc(t("查看当前项目有哪些结果和风险"))}">${esc(t("查看结果与风险"))}</button></div></div>`; }
 
   const pendingChats = new Map();
   const chatKey = (projectId = app.projectId, chatId = app.chatId) => JSON.stringify([projectId, chatId]);

@@ -1,10 +1,17 @@
 # DrugStudio
 
-DrugStudio is an agent workbench for structure-based drug discovery. It
-combines a conversational interface with modular structure retrieval,
-receptor and ligand preparation, pocket finding, docking, assessment and
-human review. The LLM routes work and interprets evidence; scientific tools
-perform deterministic calculations and preserve their inputs and outputs.
+DrugStudio is an open, reproducible and extensible drug-design studio. It
+combines a project-centered research environment with a conversational agent,
+modular structure and chemistry engines, human review and provenance-rich
+evidence. The agent plans and explains work; scientific tools perform
+deterministic calculations and preserve their inputs and outputs.
+
+The web workbench is organized around a design question and a concrete
+research **Run**. Conversation is the main interaction surface, while run
+details and structure, ligand, pocket and result views are evidence surfaces
+for that run. Files and the terminal remain expert project tools. See the
+[product architecture](docs/product-architecture.md) for the object model,
+authority boundary and open-source product direction.
 
 > DrugStudio is an active research prototype. Docking scores and predicted
 > pockets are computational evidence, not proof of binding or experimental
@@ -18,7 +25,8 @@ perform deterministic calculations and preserve their inputs and outputs.
 - Optional xTB conformer optimization, Meeko preparation and AutoDock Vina.
 - P2Rank pocket ranking, with optional fpocket comparison and human review.
 - Molecular property assessment and symmetry-aware reference redocking RMSD.
-- Project-scoped chat, file browser/editor, terminal and scientific run views.
+- Project-scoped conversations, goal-oriented runs, evidence viewers, file
+  browser/editor and terminal tools.
 - Append-only run events, artifact hashes, provenance, stage reruns and review records.
 
 Important limits:

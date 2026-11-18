@@ -1150,10 +1150,14 @@ class WebApplication:
 
     def _chat_system_prompt(self, project_root: Path, run_root: Path | None) -> str:
         context = self.chat_context(run_root)
+        project = self.project_identity(project_root)
+        project_goal = str(project.get("description") or "").strip()
+        goal_context = project_goal or "No project design goal has been recorded yet. Ask the user for the target, design objective and constraints before proposing a run."
         return (
             f"You are the DrugStudio research workbench assistant. The active project is "
             f"{project_root.name!r} and project-relative file and command tools are rooted at "
             f"{project_root}.\n\n"
+            f"Project design goal:\n{goal_context}\n\n"
             "Current run state, taken from the run manifest:\n"
             f"{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
             "Use that state to answer questions about stages, failures, pockets and scores "
